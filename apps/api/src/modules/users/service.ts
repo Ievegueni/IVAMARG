@@ -10,6 +10,7 @@ import { getSetting } from '../../lib/settings';
 export const publicUser = (u: User & { role: Role }) => ({
   id: u.id,
   name: u.name,
+  username: u.username,
   email: u.email,
   phone: u.phone,
   active: u.active,
@@ -33,21 +34,22 @@ async function assertSeatAvailable() {
 
 export async function listUsers(q: ListQuery) {
   const where: Prisma.UserWhereInput = q.search
-    ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { email: { contains: q.search, mode: 'insensitive' } }] }
+    ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { username: { contains: q.search, mode: 'insensitive' } }, { email: { contains: q.search, mode: 'insensitive' } }] }
     : {};
   const [items, total] = await Promise.all([
-    prisma.user.findMany({ where, include: { role: true }, ...pageArgs(q, ['name', 'email', 'createdAt', 'lastLoginAt'], { name: 'asc' }) }),
+    prisma.user.findMany({ where, include: { role: true }, ...pageArgs(q, ['name', 'username', 'email', 'createdAt', 'lastLoginAt'], { name: 'asc' }) }),
     prisma.user.count({ where }),
   ]);
   return pageResult(items.map(publicUser), total, q);
 }
 
-export async function createUser(ctx: Ctx, data: { name: string; email: string; roleId: string; password: string; phone?: string | null; extraPermissions?: string[] }) {
+export async function createUser(ctx: Ctx, data: { name: string; username: string; email: string; roleId: string; password: string; phone?: string | null; extraPermissions?: string[] }) {
   await assertSeatAvailable();
   return prisma.$transaction(async (tx) => {
     const user = await tx.user.create({
       data: {
         name: data.name,
+        username: data.username,
         email: data.email,
         roleId: data.roleId,
         phone: data.phone,
@@ -65,7 +67,7 @@ export async function createUser(ctx: Ctx, data: { name: string; email: string; 
 export async function updateUser(
   ctx: Ctx,
   id: string,
-  data: { name?: string; email?: string; roleId?: string; active?: boolean; password?: string; phone?: string | null; extraPermissions?: string[] },
+  data: { name?: string; username?: string; email?: string; roleId?: string; active?: boolean; password?: string; phone?: string | null; extraPermissions?: string[] },
 ) {
   const before = await prisma.user.findUnique({ where: { id }, include: { role: true } });
   if (!before) throw notFound('Utilizador');

@@ -32,13 +32,14 @@ export function UsersPage() {
       <PageHeader title="Utilizadores" actions={can('admin.create') && <Button onClick={() => setEditing('new')}>Novo utilizador</Button>} />
       <div className="mb-4 space-y-3">
         <Alert>{error || users.error}</Alert>
-        <Input placeholder="Pesquisar por nome ou email…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="max-w-sm" />
+        <Input placeholder="Pesquisar por nome, utilizador ou email…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="max-w-sm" />
       </div>
       <Card>
-        <Table head={['Nome', 'Email', 'Perfil', 'Estado', 'Último acesso', '']} empty={users.data?.items.length === 0}>
+        <Table head={['Nome', 'Utilizador', 'Email', 'Perfil', 'Estado', 'Último acesso', '']} empty={users.data?.items.length === 0}>
           {users.data?.items.map((u) => (
             <tr key={u.id}>
               <Td className="font-medium">{u.name}</Td>
+              <Td className="font-mono text-sm">{u.username}</Td>
               <Td>{u.email}</Td>
               <Td>{u.role.name}</Td>
               <Td>{u.active ? <Badge tone="green">Activo</Badge> : <Badge>Inactivo</Badge>}</Td>
@@ -73,7 +74,7 @@ export function UsersPage() {
 }
 
 function UserForm({ user, roles, onClose, onSaved }: { user: User | null; roles: Role[]; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ name: user?.name ?? '', email: user?.email ?? '', roleId: user?.role.id ?? '', password: '', phone: (user as User & { phone?: string | null })?.phone ?? '' });
+  const [form, setForm] = useState({ name: user?.name ?? '', username: user?.username ?? '', email: user?.email ?? '', roleId: user?.role.id ?? '', password: '', phone: (user as User & { phone?: string | null })?.phone ?? '' });
   const [extra, setExtra] = useState<string[]>((user as User & { extraPermissions?: string[] })?.extraPermissions ?? []);
   const [showExtra, setShowExtra] = useState(extra.length > 0);
   const { user: me } = useAuth();
@@ -99,6 +100,7 @@ function UserForm({ user, roles, onClose, onSaved }: { user: User | null; roles:
       <form onSubmit={submit} className="space-y-4">
         <Alert>{error}</Alert>
         <Field label="Nome"><Input required value={form.name} onChange={set('name')} /></Field>
+        <Field label="Nome de utilizador (para entrar)"><Input required autoCapitalize="none" autoCorrect="off" spellCheck={false} minLength={3} maxLength={30} pattern="[A-Za-z0-9._\-]+" title="Só letras, números, ponto, hífen e sublinhado" placeholder="ex.: joao.silva" value={form.username} onChange={set('username')} /></Field>
         <Field label="Email"><Input type="email" required value={form.email} onChange={set('email')} /></Field>
         <Field label="Telemóvel (alertas WhatsApp/SMS)"><Input value={form.phone} onChange={set('phone')} placeholder="923 456 789" /></Field>
         <Field label="Perfil">

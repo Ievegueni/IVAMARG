@@ -56,7 +56,7 @@ export function LoginPage() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
   const from = (useLocation().state as { from?: string } | null)?.from ?? '/';
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -68,7 +68,7 @@ export function LoginPage() {
     setBusy(true);
     setError('');
     try {
-      await login(email, password);
+      await login(username, password);
       navigate(from, { replace: true });
     } catch (err) {
       setError((err as Error).message);
@@ -81,8 +81,8 @@ export function LoginPage() {
     <AuthShell title="Entrar na plataforma">
       <form onSubmit={submit} className="space-y-4">
         <Alert>{error}</Alert>
-        <Field label="Email">
-          <Input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        <Field label="Nome de utilizador">
+          <Input autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} required value={username} onChange={(e) => setUsername(e.target.value)} />
         </Field>
         <Field label="Palavra-passe">
           <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />

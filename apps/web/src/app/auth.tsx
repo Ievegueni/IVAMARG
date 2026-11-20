@@ -5,6 +5,7 @@ import { api, refreshedUser, setAccessToken, setOnSessionExpired, tryRefresh } f
 export type User = {
   id: string;
   name: string;
+  username: string;
   email: string;
   active: boolean;
   lastLoginAt: string | null;
@@ -17,7 +18,7 @@ export type User = {
 type AuthCtx = {
   user: User | null;
   ready: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   can: (p: Permission) => boolean;
 };
@@ -40,8 +41,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const login = async (email: string, password: string) => {
-    const r = await api<{ accessToken: string; user: User }>('/auth/login', { method: 'POST', body: { email, password } });
+  const login = async (username: string, password: string) => {
+    const r = await api<{ accessToken: string; user: User }>('/auth/login', { method: 'POST', body: { username, password } });
     setAccessToken(r.accessToken);
     setUser(r.user);
   };

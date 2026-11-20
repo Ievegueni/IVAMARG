@@ -16,10 +16,10 @@ const RESET_MINUTES = 60;
 const ROTATION_GRACE_MS = 60_000;
 const DUMMY_HASH = bcrypt.hashSync('timing-equaliser', 10);
 
-const invalidCredentials = () => new AppError(401, 'INVALID_CREDENTIALS', 'Email ou palavra-passe incorrectos');
+const invalidCredentials = () => new AppError(401, 'INVALID_CREDENTIALS', 'Nome de utilizador ou palavra-passe incorrectos');
 
-export async function login(app: FastifyInstance, ctx: Ctx & { userAgent?: string }, email: string, password: string) {
-  const user = await prisma.user.findUnique({ where: { email }, include: { role: true } });
+export async function login(app: FastifyInstance, ctx: Ctx & { userAgent?: string }, username: string, password: string) {
+  const user = await prisma.user.findUnique({ where: { username }, include: { role: true } });
   if (!user) {
     await bcrypt.compare(password, DUMMY_HASH);
     throw invalidCredentials();

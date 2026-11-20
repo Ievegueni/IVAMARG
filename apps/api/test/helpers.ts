@@ -13,9 +13,10 @@ export async function setupApp() {
 /** Cria (via BD) um utilizador com o perfil indicado e devolve um cliente HTTP autenticado. */
 export async function userClient(app: FastifyInstance, roleName: string) {
   const role = await prisma.role.findUniqueOrThrow({ where: { name: roleName } });
-  const email = `${roleName.replace(/\W/g, '').toLowerCase()}-${run}-${Math.random().toString(36).slice(2, 6)}@ivamarg.ao`;
+  const username = `${roleName.replace(/\W/g, '').toLowerCase()}-${run}-${Math.random().toString(36).slice(2, 6)}`;
+  const email = `${username}@ivamarg.ao`;
   const bcrypt = (await import('bcryptjs')).default;
-  const user = await prisma.user.create({ data: { name: `${roleName} ${run}`, email, roleId: role.id, passwordHash: await bcrypt.hash('segredo123', 4) } });
+  const user = await prisma.user.create({ data: { name: `${roleName} ${run}`, username, email, roleId: role.id, passwordHash: await bcrypt.hash('segredo123', 4) } });
   const token = app.jwt.sign({ sub: user.id });
   const call = async (method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, payload?: unknown) => {
     const res = await app.inject({ method, url: `/api${url}`, headers: { authorization: `Bearer ${token}` }, payload: payload as object });

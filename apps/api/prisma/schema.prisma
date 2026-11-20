@@ -22,6 +22,7 @@ model Role {
 model User {
   id               String         @id @default(cuid())
   name             String
+  username         String         @unique // usado no login (minúsculas)
   email            String         @unique
   passwordHash     String
   roleId           String

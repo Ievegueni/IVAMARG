@@ -7,11 +7,11 @@ import { prisma } from '../../lib/prisma';
 let app: FastifyInstance;
 // BD de teste não é limpa entre execuções: emails únicos por execução.
 const run = Date.now().toString(36);
-const ANA = `ana-${run}@ivamarg.ao`;
-const GESTOR = `gestor-${run}@ivamarg.ao`;
-const ADMIN = { email: process.env.SEED_ADMIN_EMAIL!, password: process.env.SEED_ADMIN_PASSWORD! };
+const ANA = `ana-${run}`; // nome de utilizador (email = ANA@ivamarg.ao)
+const GESTOR = `gestor-${run}`;
+const ADMIN = { username: process.env.SEED_ADMIN_USERNAME ?? 'admin', email: process.env.SEED_ADMIN_EMAIL!, password: process.env.SEED_ADMIN_PASSWORD! };
 
-const login = (email: string, password: string) => app.inject({ method: 'POST', url: '/api/auth/login', payload: { email, password } });
+const login = (username: string, password: string) => app.inject({ method: 'POST', url: '/api/auth/login', payload: { username, password } });
 const cookieOf = (res: { cookies: { name: string; value: string }[] }) => res.cookies.find((c) => c.name === 'ivamarg_rt')!.value;
 const as = (token: string) => ({ authorization: `Bearer ${token}` });
 
@@ -28,14 +28,14 @@ afterAll(async () => {
 
 describe('autenticação', () => {
   it('rejeita credenciais erradas e audita', async () => {
-    const res = await login(ADMIN.email, 'errada');
+    const res = await login(ADMIN.username, 'errada');
     expect(res.statusCode).toBe(401);
     expect(res.json().error.code).toBe('INVALID_CREDENTIALS');
     expect(await prisma.auditLog.count({ where: { action: 'login_failed' } })).toBeGreaterThan(0);
   });
 
   it('login → me → refresh roda o token → logout revoga', async () => {
-    const res = await login(ADMIN.email, ADMIN.password);
+    const res = await login(ADMIN.username, ADMIN.password);
     expect(res.statusCode).toBe(200);
     const { accessToken, user } = res.json();
     expect(user.isAdmin).toBe(true);
@@ -70,7 +70,7 @@ describe('autenticação', () => {
 describe('utilizadores e permissões', () => {
   let adminToken: string;
   beforeAll(async () => {
-    adminToken = (await login(ADMIN.email, ADMIN.password)).json().accessToken;
+    adminToken = (await login(ADMIN.username, ADMIN.password)).json().accessToken;
   });
 
   it('comercial só vê o que o perfil permite; criação fica auditada', async () => {
@@ -80,7 +80,7 @@ describe('utilizadores e permissões', () => {
       method: 'POST',
       url: '/api/users',
       headers: as(adminToken),
-      payload: { name: 'Ana Comercial', email: ANA, roleId: comercial.id, password: 'segredo123' },
+      payload: { name: 'Ana Comercial', username: ANA, email: `${ANA}@ivamarg.ao`, roleId: comercial.id, password: 'segredo123' },
     });
     expect(created.statusCode).toBe(200);
     expect(await prisma.auditLog.count({ where: { entity: 'User', entityId: created.json().id, action: 'create' } })).toBe(1);
@@ -92,7 +92,7 @@ describe('utilizadores e permissões', () => {
   });
 
   it('desactivar utilizador invalida o acesso imediatamente', async () => {
-    const ana = await prisma.user.findUniqueOrThrow({ where: { email: ANA } });
+    const ana = await prisma.user.findUniqueOrThrow({ where: { username: ANA } });
     const token = (await login(ANA, 'segredo123')).json().accessToken;
     await app.inject({ method: 'PATCH', url: `/api/users/${ana.id}`, headers: as(adminToken), payload: { active: false } });
     expect((await app.inject({ url: '/api/auth/me', headers: as(token) })).statusCode).toBe(401);
@@ -106,12 +106,12 @@ describe('utilizadores e permissões', () => {
       method: 'POST',
       url: '/api/users',
       headers: as(adminToken),
-      payload: { name: 'Excedente', email: `x-${run}@ivamarg.ao`, roleId: role.id, password: 'segredo123' },
+      payload: { name: 'Excedente', username: `x-${run}`, email: `x-${run}@ivamarg.ao`, roleId: role.id, password: 'segredo123' },
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe('USER_LIMIT');
     // reactivar também conta para o limite
-    const ana = await prisma.user.findUniqueOrThrow({ where: { email: ANA } });
+    const ana = await prisma.user.findUniqueOrThrow({ where: { username: ANA } });
     const re = await app.inject({ method: 'PATCH', url: `/api/users/${ana.id}`, headers: as(adminToken), payload: { active: true } });
     expect(re.json().error.code).toBe('USER_LIMIT');
     await prisma.setting.update({ where: { key: 'users.maxActive' }, data: { value: 1000 } });
@@ -123,12 +123,12 @@ describe('utilizadores e permissões', () => {
       method: 'POST',
       url: '/api/users',
       headers: as(adminToken),
-      payload: { name: 'Gestor', email: GESTOR, roleId: role.id, password: 'segredo123' },
+      payload: { name: 'Gestor', username: GESTOR, email: `${GESTOR}@ivamarg.ao`, roleId: role.id, password: 'segredo123' },
     });
     // instância nova: contador do rate limit a zero
     const fresh = await buildApp();
     const tryLogin = (password: string) =>
-      fresh.inject({ method: 'POST', url: '/api/auth/login', payload: { email: GESTOR, password } });
+      fresh.inject({ method: 'POST', url: '/api/auth/login', payload: { username: GESTOR, password } });
     for (let i = 0; i < 5; i++) await tryLogin('errada');
     const res = await tryLogin('segredo123');
     expect(res.statusCode).toBe(423);

@@ -11,13 +11,14 @@ for (const r of DEFAULT_ROLES) {
 }
 
 const email = (process.env.SEED_ADMIN_EMAIL ?? 'admin@ivamarg.ao').toLowerCase();
+const username = (process.env.SEED_ADMIN_USERNAME ?? 'admin').toLowerCase();
 const password = process.env.SEED_ADMIN_PASSWORD;
 if (!password) throw new Error('Definir SEED_ADMIN_PASSWORD no .env');
 const adminRole = await prisma.role.findUniqueOrThrow({ where: { name: 'Administrador' } });
 await prisma.user.upsert({
   where: { email },
   update: {},
-  create: { name: 'Administrador', email, passwordHash: await bcrypt.hash(password, 10), roleId: adminRole.id },
+  create: { name: 'Administrador', username, email, passwordHash: await bcrypt.hash(password, 10), roleId: adminRole.id },
 });
 
 const settings = [
@@ -174,5 +175,5 @@ const kpis: [string, string, string, boolean][] = [
 ];
 for (const [key, name, unit, higher] of kpis) await prisma.kpiDefinition.upsert({ where: { key }, update: {}, create: { key, name, unit, higher } });
 
-console.log(`Seed concluído. Admin: ${email}`);
+console.log(`Seed concluído. Admin: ${username} (${email})`);
 await prisma.$disconnect();

@@ -20,8 +20,8 @@ export async function authRoutes(app: FastifyInstance) {
   const strict = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 
   app.post('/login', strict, async (req, reply) => {
-    const { email, password } = loginSchema.parse(req.body);
-    const r = await auth.login(app, { ...ctxOf(req), userAgent: req.headers['user-agent'] }, email, password);
+    const { username, password } = loginSchema.parse(req.body);
+    const r = await auth.login(app, { ...ctxOf(req), userAgent: req.headers['user-agent'] }, username, password);
     setRefreshCookie(reply, r.refreshToken);
     return { accessToken: r.accessToken, user: r.user };
   });

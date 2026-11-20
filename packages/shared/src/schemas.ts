@@ -5,8 +5,16 @@ import { CONTRACT_STATUS, INTERACTION_TYPES, LEAD_SOURCES, ORDER_STATUS, PERIODI
 import { ALL_PERMISSIONS } from './permissions';
 import { ATTENDANCE_STATUS, CONTRACT_TYPES, EMPLOYEE_STATUS, LEAVE_TYPES } from './hr';
 
+export const usernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3, 'Mínimo 3 caracteres')
+  .max(30, 'Máximo 30 caracteres')
+  .regex(/^[a-z0-9._-]+$/, 'Só letras, números, ponto, hífen e sublinhado (sem espaços nem acentos)');
+
 export const loginSchema = z.object({
-  email: z.string().trim().toLowerCase().email('Email inválido'),
+  username: z.string().trim().toLowerCase().min(1, 'Nome de utilizador obrigatório'),
   password: z.string().min(1, 'Palavra-passe obrigatória'),
 });
 
@@ -17,6 +25,7 @@ export const resetPasswordSchema = z.object({ token: z.string().min(1), password
 
 export const userCreateSchema = z.object({
   name: z.string().trim().min(2, 'Nome obrigatório'),
+  username: usernameSchema,
   email: z.string().trim().toLowerCase().email('Email inválido'),
   roleId: z.string().min(1, 'Perfil obrigatório'),
   password: passwordSchema,
@@ -25,6 +34,7 @@ export const userCreateSchema = z.object({
 });
 export const userUpdateSchema = z.object({
   name: z.string().trim().min(2).optional(),
+  username: usernameSchema.optional(),
   email: z.string().trim().toLowerCase().email().optional(),
   roleId: z.string().min(1).optional(),
   active: z.boolean().optional(),
