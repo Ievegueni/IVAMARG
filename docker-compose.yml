@@ -1,0 +1,19 @@
+# Ambiente local de desenvolvimento/testes. Em produção, Postgres e Redis correm na VPS.
+# Portas 5442/6392 para não colidir com instalações locais de Postgres/Redis.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ivamarg
+      POSTGRES_PASSWORD: ivamarg
+      POSTGRES_DB: ivamarg
+    ports: ["5442:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7-alpine
+    ports: ["6392:6379"]
+  mailpit: # SMTP local: os emails enviados ficam visíveis em http://localhost:8025
+    image: axllent/mailpit
+    ports: ["1025:1025", "8025:8025"]
+volumes:
+  pgdata:

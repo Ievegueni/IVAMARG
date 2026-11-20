@@ -1,0 +1,21 @@
+{
+  "name": "ivamarg",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "dev": "concurrently -n api,worker,web -c blue,magenta,green \"npm -w apps/api run dev\" \"npm -w apps/api run dev:worker\" \"npm -w apps/web run dev\"",
+    "db:migrate": "npm -w apps/api run db:migrate",
+    "db:seed": "npm -w apps/api run db:seed",
+    "test": "npm -w packages/shared run test && npm -w apps/api run test",
+    "typecheck": "npm -w packages/shared run typecheck && npm -w apps/api run typecheck && npm -w apps/web run typecheck",
+    "build": "npm -w apps/api run build && npm -w apps/web run build",
+    "start": "pm2 start ecosystem.config.cjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7",
+    "typescript": "~5.9.3"
+  }
+}
