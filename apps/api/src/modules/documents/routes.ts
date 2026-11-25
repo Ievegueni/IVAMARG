@@ -11,7 +11,7 @@ import * as docs from './service';
 type Id = { Params: { id: string } };
 
 /** Lê o ficheiro e os campos de um pedido multipart (campo "meta" com JSON). */
-async function readUpload(req: FastifyRequest) {
+export async function readUpload(req: FastifyRequest) {
   let file: docs.Upload | undefined;
   let meta: unknown;
   for await (const part of req.parts()) {

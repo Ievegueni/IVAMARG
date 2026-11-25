@@ -1,10 +1,12 @@
-import { computeCommission, formatKz, receivableStatus, type CommissionItem, type CommissionRule, type ListQuery } from '@ivamarg/shared';
+import { computeCommission, formatKz, payableSchema, receivableStatus, type CommissionItem, type CommissionRule, type ListQuery } from '@ivamarg/shared';
+import type { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { audit, type Ctx } from '../../lib/audit';
 import { AppError, forbidden, notFound } from '../../lib/errors';
 import { notify, usersWithPermission } from '../../lib/notify';
 import { pageArgs, pageResult } from '../../lib/pagination';
 import { prisma } from '../../lib/prisma';
+import { getSetting } from '../../lib/settings';
 import { seesAll } from '../../lib/scope';
 import { addTimeline } from '../../lib/timeline';
 import { emitAutomation } from '../communication/automations';
@@ -79,6 +81,91 @@ export async function cancelPayment(ctx: Ctx, paymentId: string) {
   });
 }
 
+// ─── Fornecedores e prestadores: compras e dívidas ───
+
+/** Fornecedores/prestadores com o saldo em dívida e o vencido. */
+export async function listSuppliers(q: ListQuery) {
+  const where: Prisma.SupplierWhereInput = { deletedAt: null, ...(q.search && { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { nif: { contains: q.search } }] }) };
+  const [items, total] = await Promise.all([prisma.supplier.findMany({ where, ...pageArgs(q, ['name'], { name: 'asc' }) }), prisma.supplier.count({ where })]);
+  const open = await prisma.payable.findMany({ where: { deletedAt: null, supplierId: { in: items.map((s) => s.id) }, paid: { lt: prisma.payable.fields.amount } }, select: { supplierId: true, amount: true, paid: true, dueDate: true } });
+  const now = today();
+  return pageResult(items.map((s) => {
+    const mine = open.filter((p) => p.supplierId === s.id);
+    return { ...s, balance: mine.reduce((t, p) => t + p.amount - p.paid, 0), overdue: mine.filter((p) => p.dueDate && p.dueDate < now).reduce((t, p) => t + p.amount - p.paid, 0) };
+  }), total, q);
+}
+
+export async function listPayables(q: ListQuery & { supplierId?: string; status?: string }) {
+  const where: Prisma.PayableWhereInput = {
+    deletedAt: null,
+    ...(q.supplierId && { supplierId: q.supplierId }),
+    ...(q.status === 'PAID' && { paid: { gte: prisma.payable.fields.amount } }),
+    ...((q.status === 'OPEN_ALL' || q.status === 'OVERDUE') && { paid: { lt: prisma.payable.fields.amount } }),
+    ...(q.status === 'OVERDUE' && { dueDate: { lt: today() } }),
+    ...(q.search && { OR: [{ description: { contains: q.search, mode: 'insensitive' } }, { reference: { contains: q.search, mode: 'insensitive' } }, { supplier: { name: { contains: q.search, mode: 'insensitive' } } }] }),
+  };
+  const [items, total, sums] = await Promise.all([
+    prisma.payable.findMany({ where, include: { supplier: { select: { id: true, name: true } }, category: { select: { name: true } } }, ...pageArgs(q, ['date', 'dueDate', 'amount'], { date: 'desc' }) }),
+    prisma.payable.count({ where }),
+    prisma.payable.aggregate({ where, _sum: { amount: true, paid: true } }),
+  ]);
+  return { ...pageResult(items.map(withStatus), total, q), totals: { amount: sums._sum.amount ?? 0, paid: sums._sum.paid ?? 0 } };
+}
+
+export async function getPayable(id: string) {
+  const p = await prisma.payable.findFirst({ where: { id, deletedAt: null }, include: { supplier: { select: { id: true, name: true } }, category: { select: { name: true } }, payments: { orderBy: { paidAt: 'asc' } } } });
+  if (!p) throw notFound('Dívida');
+  return withStatus(p);
+}
+
+export async function createPayable(ctx: Ctx, d: z.output<typeof payableSchema>) {
+  const { paidNow, ...data } = d;
+  const cat = await prisma.entryCategory.findFirst({ where: { id: d.categoryId, type: 'EXPENSE' } });
+  if (!cat) throw new AppError(400, 'INVALID_CATEGORY', 'Categoria de despesa inválida');
+  const p = await prisma.payable.create({ data: { ...data, createdById: ctx.userId } });
+  await audit(ctx, { entity: 'Payable', entityId: p.id, action: 'create', after: p });
+  if (paidNow) await paySupplier(ctx, p.id, { amount: p.amount, method: paidNow.method, paidAt: p.date, reference: paidNow.reference });
+  return getPayable(p.id);
+}
+
+/** Pagamento a fornecedor/prestador: abate a dívida e lança a despesa (categoria e centro de custo da dívida). */
+export async function paySupplier(ctx: Ctx, payableId: string, d: { amount: number; method: string; paidAt: Date; reference?: string | null; notes?: string | null }) {
+  return prisma.$transaction(async (tx) => {
+    const [p] = await tx.$queryRaw<{ id: string; amount: number; paid: number }[]>`SELECT id, amount, paid FROM "Payable" WHERE id = ${payableId} AND "deletedAt" IS NULL FOR UPDATE`;
+    if (!p) throw notFound('Dívida');
+    if (d.amount > p.amount - p.paid) throw new AppError(400, 'OVERPAYMENT', `Valor acima do saldo em dívida (${formatKz(p.amount - p.paid)})`);
+    const full = await tx.payable.update({ where: { id: payableId }, data: { paid: p.paid + d.amount }, include: { supplier: { select: { name: true } } } });
+    const sp = await tx.supplierPayment.create({ data: { ...d, payableId, userId: ctx.userId } });
+    await tx.financialEntry.create({
+      data: {
+        type: 'EXPENSE', categoryId: full.categoryId, amount: d.amount, date: d.paidAt, description: `${full.supplier.name} - ${full.description}`,
+        businessLineId: full.businessLineId, entity: full.entity, entityId: full.entityId, supplierId: full.supplierId, supplierPaymentId: sp.id, createdById: ctx.userId,
+      },
+    });
+    await audit(ctx, { entity: 'SupplierPayment', entityId: sp.id, action: 'create', after: sp }, tx);
+    return sp;
+  });
+}
+
+export async function cancelSupplierPayment(ctx: Ctx, id: string) {
+  return prisma.$transaction(async (tx) => {
+    const sp = await tx.supplierPayment.findUnique({ where: { id } });
+    if (!sp || sp.cancelledAt) throw notFound('Pagamento');
+    await tx.supplierPayment.update({ where: { id }, data: { cancelledAt: new Date() } });
+    await tx.payable.update({ where: { id: sp.payableId }, data: { paid: { decrement: sp.amount } } });
+    await tx.financialEntry.updateMany({ where: { supplierPaymentId: id }, data: { deletedAt: new Date() } });
+    await audit(ctx, { entity: 'SupplierPayment', entityId: id, action: 'cancel', before: sp }, tx);
+    return { ok: true };
+  });
+}
+
+export async function deletePayable(ctx: Ctx, id: string) {
+  const p = await getPayable(id);
+  if (p.payments.some((x) => !x.cancelledAt)) throw new AppError(409, 'HAS_PAYMENTS', 'Anule primeiro os pagamentos desta dívida');
+  await prisma.payable.update({ where: { id }, data: { deletedAt: new Date() } });
+  await audit(ctx, { entity: 'Payable', entityId: id, action: 'delete', before: p });
+}
+
 /** Job diário: contas vencidas e não pagas → automação "pagamento em atraso" + aviso ao financeiro (uma vez). */
 export async function overdueAlert() {
   const due = await prisma.receivable.findMany({ where: { deletedAt: null, overdueNotifiedAt: null, dueDate: { lt: today() } } });
@@ -94,6 +181,23 @@ export async function overdueAlert() {
     link: '/financeiro?status=OVERDUE',
   });
   return { overdue: overdue.length };
+}
+
+/**
+ * Job diário: dívidas a fornecedores/prestadores a vencer (N dias antes, configurável) e vencidas
+ * (no 1.º dia de atraso e depois semanalmente, sem estado guardado).
+ */
+export async function payablesAlert(today: Date) {
+  const days = await getSetting<number>('finance.payablesAlertDays', 3);
+  const open = (await prisma.payable.findMany({ where: { deletedAt: null, dueDate: { not: null } }, include: { supplier: { select: { name: true } } } })).filter((p) => p.paid < p.amount);
+  const diff = (p: { dueDate: Date | null }) => Math.round((p.dueDate!.getTime() - today.getTime()) / 86400000);
+  const soon = open.filter((p) => diff(p) === days);
+  const late = open.filter((p) => diff(p) < 0 && (-diff(p) - 1) % 7 === 0);
+  const to = await usersWithPermission('finance.viewAll');
+  const line = (p: (typeof open)[number]) => `${p.supplier.name}: ${formatKz(p.amount - p.paid)} (${p.description})`;
+  if (soon.length) await notify(to, { title: `${soon.length} pagamento(s) a fornecedores vencem em ${days} dia(s)`, body: soon.slice(0, 10).map(line).join(' · '), link: '/financeiro' });
+  if (late.length) await notify(to, { title: `🔴 ${late.length} pagamento(s) a fornecedores em atraso`, body: late.slice(0, 10).map(line).join(' · '), link: '/financeiro' });
+  return { soon: soon.length, late: late.length };
 }
 
 // ─── Comissões ───

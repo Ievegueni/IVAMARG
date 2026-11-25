@@ -1,4 +1,4 @@
-import { commissionRuleSchema, entrySchema, listQuerySchema, paymentSchema, periodSchema, receivableSchema } from '@ivamarg/shared';
+import { commissionRuleSchema, entrySchema, listQuerySchema, payableSchema, paymentSchema, periodSchema, receivableSchema, supplierSchema } from '@ivamarg/shared';
 import type { Prisma } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -29,6 +29,30 @@ export async function financeRoutes(app: FastifyInstance) {
   app.post<Id>('/receivables/:id/payments', create, (req) => fin.registerPayment(ctxOf(req), req.currentUser!, req.params.id, paymentSchema.parse(req.body)));
   app.post<Id>('/payments/:id/cancel', { preHandler: app.guard('finance.delete') }, (req) => fin.cancelPayment(ctxOf(req), req.params.id));
 
+  // ── Fornecedores / prestadores de serviço: compras e dívidas ──
+  app.get('/suppliers', all, (req) => fin.listSuppliers(listQuerySchema.parse(req.query)));
+  app.post('/suppliers', create, async (req) => {
+    const s = await prisma.supplier.create({ data: { ...supplierSchema.parse(req.body), createdById: req.currentUser!.id } });
+    await audit(ctxOf(req), { entity: 'Supplier', entityId: s.id, action: 'create', after: s });
+    return s;
+  });
+  app.patch<Id>('/suppliers/:id', { preHandler: app.guard('finance.edit') }, async (req) => {
+    const before = await prisma.supplier.findFirst({ where: { id: req.params.id, deletedAt: null } });
+    if (!before) throw notFound('Fornecedor');
+    const after = await prisma.supplier.update({ where: { id: before.id }, data: supplierSchema.partial().parse(req.body) });
+    await audit(ctxOf(req), { entity: 'Supplier', entityId: before.id, action: 'update', before, after });
+    return after;
+  });
+  app.get('/payables', all, (req) => fin.listPayables(listQuerySchema.extend({ supplierId: z.string().optional(), status: z.string().optional() }).parse(req.query)));
+  app.get<Id>('/payables/:id', all, (req) => fin.getPayable(req.params.id));
+  app.post('/payables', create, (req) => fin.createPayable(ctxOf(req), payableSchema.parse(req.body)));
+  app.delete<Id>('/payables/:id', { preHandler: app.guard('finance.delete') }, async (req) => {
+    await fin.deletePayable(ctxOf(req), req.params.id);
+    return { ok: true };
+  });
+  app.post<Id>('/payables/:id/payments', create, (req) => fin.paySupplier(ctxOf(req), req.params.id, paymentSchema.parse(req.body)));
+  app.post<Id>('/supplier-payments/:id/cancel', { preHandler: app.guard('finance.delete') }, (req) => fin.cancelSupplierPayment(ctxOf(req), req.params.id));
+
   // ── Receitas e despesas ──
   app.get('/entries', all, async (req) => {
     const q = listQuerySchema.extend({ type: z.string().optional(), categoryId: z.string().optional(), businessLineId: z.string().optional(), from: z.coerce.date().optional(), to: z.coerce.date().optional(), entity: z.string().optional(), entityId: z.string().optional() }).parse(req.query);
@@ -55,14 +79,14 @@ export async function financeRoutes(app: FastifyInstance) {
     return e;
   });
   app.patch<Id>('/entries/:id', { preHandler: app.guard('finance.edit') }, async (req) => {
-    const before = await prisma.financialEntry.findFirst({ where: { id: req.params.id, deletedAt: null, paymentId: null } });
-    if (!before) throw notFound('Movimento (recebimentos editam-se no pagamento)');
+    const before = await prisma.financialEntry.findFirst({ where: { id: req.params.id, deletedAt: null, paymentId: null, supplierPaymentId: null, salaryPaymentId: null } });
+    if (!before) throw notFound('Movimento (recebimentos e pagamentos a fornecedores editam-se no pagamento)');
     const after = await prisma.financialEntry.update({ where: { id: before.id }, data: entrySchema.partial().parse(req.body) });
     await audit(ctxOf(req), { entity: 'FinancialEntry', entityId: before.id, action: 'update', before, after });
     return after;
   });
   app.delete<Id>('/entries/:id', { preHandler: app.guard('finance.delete') }, async (req) => {
-    const before = await prisma.financialEntry.findFirst({ where: { id: req.params.id, deletedAt: null, paymentId: null } });
+    const before = await prisma.financialEntry.findFirst({ where: { id: req.params.id, deletedAt: null, paymentId: null, supplierPaymentId: null, salaryPaymentId: null } });
     if (!before) throw notFound('Movimento');
     await prisma.financialEntry.update({ where: { id: before.id }, data: { deletedAt: new Date() } });
     await audit(ctxOf(req), { entity: 'FinancialEntry', entityId: before.id, action: 'delete', before });
@@ -114,6 +138,8 @@ export async function financeRoutes(app: FastifyInstance) {
     }
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     const month = await prisma.financialEntry.groupBy({ by: ['type'], where: { deletedAt: null, date: { gte: monthStart } }, _sum: { amount: true } });
+    const payables = await prisma.payable.findMany({ where: { deletedAt: null, paid: { lt: prisma.payable.fields.amount } }, select: { amount: true, paid: true, dueDate: true } });
+    const today = new Date(now.toISOString().slice(0, 10));
     const commissions = await prisma.commission.groupBy({ by: ['status'], _sum: { amount: true } });
     const topDebtors = new Map<string, number>();
     for (const r of pending) topDebtors.set(r.clientId, (topDebtors.get(r.clientId) ?? 0) + r.amount - r.paid);
@@ -126,6 +152,8 @@ export async function financeRoutes(app: FastifyInstance) {
       monthIncome: month.find((m) => m.type === 'INCOME')?._sum.amount ?? 0,
       monthExpense: month.find((m) => m.type === 'EXPENSE')?._sum.amount ?? 0,
       commissions: Object.fromEntries(commissions.map((c) => [c.status, c._sum.amount ?? 0])),
+      payablesOpen: payables.reduce((s, p) => s + p.amount - p.paid, 0),
+      payablesOverdue: payables.filter((p) => p.dueDate && p.dueDate < today).reduce((s, p) => s + p.amount - p.paid, 0),
       topDebtors: top.map(([id, amount]) => ({ id, name: names.get(id) ?? '-', amount })),
     };
   });

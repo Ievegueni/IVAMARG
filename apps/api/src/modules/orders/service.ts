@@ -47,7 +47,7 @@ export async function getOrder(user: PublicUser, id: string) {
 function linesData(lines: OrderData['lines']) {
   const rows = lines.map((l, i) => {
     const quantity = Object.keys(l.sizeGrid).length ? gridTotal(l.sizeGrid) : (l.quantity ?? 0);
-    return { position: i + 1, description: l.description, productModelId: l.productModelId, sizeGrid: l.sizeGrid, quantity, unitPrice: l.unitPrice, total: quantity * l.unitPrice };
+    return { position: i + 1, description: l.description, productModelId: l.productModelId, sizeGrid: l.sizeGrid, color: l.color, details: l.details, quantity, unitPrice: l.unitPrice, total: quantity * l.unitPrice };
   });
   return { rows, total: rows.reduce((s, r) => s + r.total, 0) };
 }

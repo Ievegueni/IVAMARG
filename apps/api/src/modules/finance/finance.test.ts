@@ -6,7 +6,7 @@ import { env } from '../../lib/env';
 import { prisma } from '../../lib/prisma';
 import { processVendus } from '../invoices/service';
 import { processReport } from '../reports/routes';
-import { calculateCommissions, overdueAlert } from './service';
+import { calculateCommissions, overdueAlert, payablesAlert } from './service';
 
 let app: FastifyInstance;
 type Api = Awaited<ReturnType<typeof userClient>>;
@@ -132,5 +132,40 @@ describe('relatórios e KPIs', () => {
       const file = await app.inject({ url });
       expect(file.rawPayload.subarray(0, 4).toString('latin1')).toBe(format === 'pdf' ? '%PDF' : 'PK\u0003\u0004');
     }
+  });
+});
+
+describe('fornecedores e prestadores: compras e dívidas', () => {
+  it('dívida → pagamentos parciais geram despesa; pago no acto; anular repõe; permissões', async () => {
+    const s = await fin.call('POST', '/finance/suppliers', { name: `Segurança Lda ${run}`, nif: '5000000000' });
+    expect(s.status).toBe(200);
+    const cat = await prisma.entryCategory.findFirstOrThrow({ where: { type: 'EXPENSE', active: true } });
+    const d = await fin.call('POST', '/finance/payables', { supplierId: s.body.id, categoryId: cat.id, description: 'Vigilância Novembro', reference: 'FT 12', amount: 300_000, date: '2026-11-01', dueDate: '2026-11-10' });
+    expect(d.body).toMatchObject({ balance: 300_000, status: 'OVERDUE' });
+    const p = await fin.call('POST', `/finance/payables/${d.body.id}/payments`, { amount: 100_000, method: 'TRANSFER', paidAt: '2026-11-20' });
+    expect((await fin.call('POST', `/finance/payables/${d.body.id}/payments`, { amount: 250_000, method: 'CASH', paidAt: '2026-11-20' })).body.error.code).toBe('OVERPAYMENT');
+    expect(await prisma.financialEntry.findFirst({ where: { supplierPaymentId: p.body.id } })).toMatchObject({ type: 'EXPENSE', amount: 100_000, supplierId: s.body.id, categoryId: cat.id });
+    const list = (await fin.call('GET', `/finance/suppliers?search=${encodeURIComponent(`Segurança Lda ${run}`)}`)).body;
+    expect(list.items[0]).toMatchObject({ balance: 200_000, overdue: 200_000 });
+
+    // Compra paga no acto: dívida já liquidada e despesa lançada.
+    const now = await fin.call('POST', '/finance/payables', { supplierId: s.body.id, categoryId: cat.id, description: 'Material de escritório', amount: 15_000, date: '2026-11-21', paidNow: { method: 'CASH' } });
+    expect(now.body).toMatchObject({ paid: 15_000, status: 'PAID' });
+
+    // Despesa automática não se edita à mão; anular o pagamento repõe o saldo e remove a despesa.
+    const entry = await prisma.financialEntry.findFirstOrThrow({ where: { supplierPaymentId: p.body.id } });
+    expect((await admin.call('DELETE', `/finance/entries/${entry.id}`)).status).toBe(404);
+    expect((await fin.call('DELETE', `/finance/payables/${d.body.id}`)).body.error.code).toBe('HAS_PAYMENTS');
+    await admin.call('POST', `/finance/supplier-payments/${p.body.id}/cancel`);
+    expect((await fin.call('GET', `/finance/payables/${d.body.id}`)).body.balance).toBe(300_000);
+    expect((await prisma.financialEntry.findUniqueOrThrow({ where: { id: entry.id } })).deletedAt).not.toBeNull();
+
+    // Alertas: 3 dias antes do vencimento e no 1.º dia de atraso (depois semanal).
+    expect((await payablesAlert(new Date('2026-11-07T00:00:00Z'))).soon).toBeGreaterThanOrEqual(1);
+    expect((await payablesAlert(new Date('2026-11-11T00:00:00Z'))).late).toBeGreaterThanOrEqual(1);
+    expect(await prisma.notification.count({ where: { userId: fin.user.id, title: { contains: 'fornecedores em atraso' } } })).toBeGreaterThanOrEqual(1);
+
+    // Comercial (só as suas comissões) não vê dívidas a fornecedores.
+    expect((await comercial.call('GET', '/finance/payables')).status).toBe(403);
   });
 });

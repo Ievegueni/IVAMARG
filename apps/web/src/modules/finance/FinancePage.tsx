@@ -3,7 +3,8 @@ import { useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../app/auth';
 import { ClientSelect } from '../../components/ClientSelect';
-import { Alert, Badge, Button, Card, ConfirmModal, Field, Input, Modal, PageHeader, Pagination, Select, Table, Tabs, Td } from '../../components/ui';
+import { SearchSelect, type Opt } from '../../components/SearchSelect';
+import { Alert, Badge, Button, Card, ConfirmModal, Field, Input, Modal, PageHeader, Pagination, Select, Table, Tabs, Td, Textarea } from '../../components/ui';
 import { api, toQuery } from '../../lib/api';
 import { errMsg, localDate, monthStartDate } from '../../lib/format';
 import { useBusinessLines, useUserOptions } from '../../lib/options';
@@ -19,9 +20,10 @@ export function FinancePage() {
   const tabs = ([
     can('finance.viewAll') && ['dash', 'Painel'],
     ['receivables', 'Contas a receber'],
+    can('finance.viewAll') && ['payables', 'Fornecedores e prestadores'],
     can('finance.viewAll') && ['entries', 'Receitas e despesas'],
     ['commissions', 'Comissões'],
-  ].filter(Boolean) as ['dash' | 'receivables' | 'entries' | 'commissions', string][]);
+  ].filter(Boolean) as ['dash' | 'receivables' | 'payables' | 'entries' | 'commissions', string][]);
   const [tab, setTab] = useState(params.get('status') ? 'receivables' : tabs[0][0]);
   return (
     <>
@@ -29,6 +31,7 @@ export function FinancePage() {
       <Tabs value={tab} onChange={setTab} tabs={tabs} />
       {tab === 'dash' && <FinanceDash />}
       {tab === 'receivables' && <Receivables initialStatus={params.get('status') ?? 'OPEN_ALL'} />}
+      {tab === 'payables' && <Payables />}
       {tab === 'entries' && <Entries />}
       {tab === 'commissions' && <Commissions />}
     </>
@@ -36,7 +39,7 @@ export function FinancePage() {
 }
 
 function FinanceDash() {
-  const r = useApi<{ openTotal: number; overdueTotal: number; aging: Record<string, number>; monthIncome: number; monthExpense: number; commissions: Record<string, number>; topDebtors: { id: string; name: string; amount: number }[] }>('/finance/dashboard');
+  const r = useApi<{ openTotal: number; overdueTotal: number; aging: Record<string, number>; monthIncome: number; monthExpense: number; payablesOpen: number; payablesOverdue: number; commissions: Record<string, number>; topDebtors: { id: string; name: string; amount: number }[] }>('/finance/dashboard');
   if (r.error) return <Alert>{r.error}</Alert>;
   const d = r.data;
   if (!d) return <div className="text-slate-500">A carregar…</div>;
@@ -50,6 +53,8 @@ function FinanceDash() {
         {stat('Despesas este mês', d.monthExpense)}
         {stat('Comissões por aprovar', d.commissions.CALCULATED ?? 0)}
         {stat('Comissões por pagar', d.commissions.APPROVED ?? 0)}
+        {stat('A pagar a fornecedores', d.payablesOpen)}
+        {stat('Fornecedores em atraso', d.payablesOverdue, 'red')}
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="p-4">
@@ -200,7 +205,227 @@ function NewReceivable({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   );
 }
 
-type Entry = { id: string; type: 'INCOME' | 'EXPENSE'; amount: number; date: string; description: string; paymentId: string | null; category: { name: string }; businessLineId: string | null };
+// ─── Fornecedores e prestadores de serviço ───
+
+type Supplier = { id: string; name: string; nif: string | null; phone: string | null; email: string | null; address: string | null; notes: string | null; balance: number; overdue: number };
+type Payable = Omit<Rec, 'clientId' | 'clientName' | 'invoice'> & { date: string; reference: string | null; supplier: { id: string; name: string }; category: { name: string } };
+type PayableDetail = Payable & { payments: RecDetail['payments'] };
+const SupplierPick = (p: { value: Opt | null; onChange: (o: Opt | null) => void }) => (
+  <SearchSelect<Supplier> path="/finance/suppliers" map={(s) => ({ id: s.id, label: s.name, hint: s.nif })} placeholder="Fornecedor / prestador…" {...p} />
+);
+
+function Payables() {
+  const { can } = useAuth();
+  const [view, setView] = useState<'debts' | 'suppliers'>('debts');
+  const [page, setPage] = useState(1);
+  const [status, setStatus] = useState('OPEN_ALL');
+  const [supplier, setSupplier] = useState<Opt | null>(null);
+  const list = useApi<Page<Payable> & { totals: { amount: number; paid: number } }>(view === 'debts' ? `/finance/payables${toQuery({ page, status, supplierId: supplier?.id })}` : null);
+  const sups = useApi<Page<Supplier>>(view === 'suppliers' ? `/finance/suppliers${toQuery({ page })}` : null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Supplier | 'new' | null>(null);
+  const go = (v: typeof view) => { setView(v); setPage(1); };
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Select className="w-48" value={view} onChange={(e) => go(e.target.value as typeof view)}><option value="debts">Compras e dívidas</option><option value="suppliers">Fornecedores / prestadores</option></Select>
+        {view === 'debts' && (
+          <>
+            <Select className="w-44" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
+              <option value="OPEN_ALL">Por pagar</option><option value="OVERDUE">Em atraso</option><option value="PAID">Pagas</option><option value="">Todas</option>
+            </Select>
+            <div className="w-64"><SupplierPick value={supplier} onChange={(o) => { setSupplier(o); setPage(1); }} /></div>
+            {list.data && <span className="text-sm text-slate-600">Total {formatKz(list.data.totals.amount)} · pago {formatKz(list.data.totals.paid)} · <b>em dívida {formatKz(list.data.totals.amount - list.data.totals.paid)}</b></span>}
+          </>
+        )}
+        {can('finance.create') && (
+          <div className="ml-auto flex gap-2">
+            <Button variant="secondary" onClick={() => setEditing('new')}>Novo fornecedor / prestador</Button>
+            <Button onClick={() => setCreating(true)}>Registar compra / dívida</Button>
+          </div>
+        )}
+      </div>
+      <Alert>{view === 'debts' ? list.error : sups.error}</Alert>
+      {view === 'debts' ? (
+        <Card>
+          <Table head={['Fornecedor / prestador', 'Descrição', 'Data', 'Vencimento', 'Valor', 'Pago', 'Saldo', 'Estado']} empty={list.data?.items.length === 0}>
+            {list.data?.items.map((p) => (
+              <tr key={p.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setOpen(p.id)}>
+                <Td className="font-medium">{p.supplier.name}</Td>
+                <Td>{p.description}{p.reference && <span className="ml-1 text-xs text-slate-500">({p.reference})</span>}<div className="text-xs text-slate-500">{p.category.name}</div></Td>
+                <Td>{formatDate(p.date)}</Td><Td>{p.dueDate ? formatDate(p.dueDate) : '-'}</Td>
+                <Td className="text-right">{formatKz(p.amount)}</Td><Td className="text-right">{formatKz(p.paid)}</Td><Td className="text-right font-medium">{formatKz(p.balance)}</Td>
+                <Td><Badge tone={tone(p.status)}>{RECEIVABLE_STATUS[p.status]}</Badge></Td>
+              </tr>
+            ))}
+          </Table>
+          {list.data && <Pagination {...list.data} onPage={setPage} />}
+        </Card>
+      ) : (
+        <Card>
+          <Table head={['Nome', 'NIF', 'Contacto', 'Em dívida', 'Em atraso', '']} empty={sups.data?.items.length === 0}>
+            {sups.data?.items.map((s) => (
+              <tr key={s.id}>
+                <Td><button className="cursor-pointer font-medium text-brand-600 hover:underline" onClick={() => { setSupplier({ id: s.id, label: s.name }); go('debts'); setStatus(''); }}>{s.name}</button></Td>
+                <Td>{s.nif ?? '-'}</Td><Td>{[s.phone, s.email].filter(Boolean).join(' · ') || '-'}</Td>
+                <Td className="text-right font-medium">{formatKz(s.balance)}</Td><Td className={`text-right ${s.overdue ? 'text-red-700' : ''}`}>{formatKz(s.overdue)}</Td>
+                <Td>{can('finance.edit') && <button className="cursor-pointer text-sm text-brand-600 hover:underline" onClick={() => setEditing(s)}>Editar</button>}</Td>
+              </tr>
+            ))}
+          </Table>
+          {sups.data && <Pagination {...sups.data} onPage={setPage} />}
+        </Card>
+      )}
+      {open && <PayableModal id={open} onClose={() => setOpen(null)} onChanged={list.reload} />}
+      {creating && <NewPayable initial={supplier} onClose={() => setCreating(false)} onSaved={() => { setCreating(false); list.reload(); }} />}
+      {editing && <SupplierForm s={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); sups.reload(); }} />}
+    </>
+  );
+}
+
+function SupplierForm({ s, onClose, onSaved }: { s: Supplier | null; onClose: () => void; onSaved: () => void }) {
+  const [f, setF] = useState({ name: s?.name ?? '', nif: s?.nif ?? '', phone: s?.phone ?? '', email: s?.email ?? '', address: s?.address ?? '', notes: s?.notes ?? '' });
+  const [error, setError] = useState('');
+  const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await api(s ? `/finance/suppliers/${s.id}` : '/finance/suppliers', { method: s ? 'PATCH' : 'POST', body: f });
+      onSaved();
+    } catch (err) {
+      setError(errMsg(err));
+    }
+  };
+  return (
+    <Modal open title={s ? `Editar ${s.name}` : 'Novo fornecedor / prestador de serviço'} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Alert>{error}</Alert>
+        <Field label="Nome"><Input required value={f.name} onChange={set('name')} /></Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="NIF"><Input value={f.nif} onChange={set('nif')} /></Field>
+          <Field label="Telefone"><Input value={f.phone} onChange={set('phone')} /></Field>
+          <Field label="Email"><Input type="email" value={f.email} onChange={set('email')} /></Field>
+          <Field label="Morada"><Input value={f.address} onChange={set('address')} /></Field>
+        </div>
+        <Field label="Notas (serviço prestado, IBAN…)"><Textarea value={f.notes} onChange={set('notes')} /></Field>
+        <div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={onClose}>Cancelar</Button><Button type="submit">Guardar</Button></div>
+      </form>
+    </Modal>
+  );
+}
+
+function NewPayable({ initial, onClose, onSaved }: { initial: Opt | null; onClose: () => void; onSaved: () => void }) {
+  const lines = useBusinessLines();
+  const cats = useApi<{ id: string; name: string; type: string; active: boolean }[]>('/finance/categories');
+  const [supplier, setSupplier] = useState<Opt | null>(initial);
+  const [f, setF] = useState({ categoryId: '', description: '', reference: '', amount: '', date: localDate(), dueDate: '', businessLineId: '' });
+  const [paidNow, setPaidNow] = useState<{ method: string } | null>(null);
+  const [error, setError] = useState('');
+  const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!supplier) return setError('Seleccione o fornecedor / prestador');
+    try {
+      await api('/finance/payables', { method: 'POST', body: { ...f, supplierId: supplier.id, dueDate: paidNow ? null : f.dueDate || null, paidNow } });
+      onSaved();
+    } catch (err) {
+      setError(errMsg(err));
+    }
+  };
+  return (
+    <Modal open title="Compra / dívida a fornecedor ou prestador" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Alert>{error}</Alert>
+        <Field label="Fornecedor / prestador"><SupplierPick value={supplier} onChange={setSupplier} /></Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Descrição"><Input required value={f.description} onChange={set('description')} placeholder="ex.: Serviço de vigilância - Novembro" /></Field>
+          <Field label="N.º da factura do fornecedor"><Input value={f.reference} onChange={set('reference')} /></Field>
+          <Field label="Categoria de despesa"><Select required value={f.categoryId} onChange={set('categoryId')}><option value="">-</option>{cats.data?.filter((c) => c.type === 'EXPENSE' && c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+          <Field label="Linha de negócio"><Select value={f.businessLineId} onChange={set('businessLineId')}><option value="">-</option>{lines.data?.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>
+          <Field label="Valor (Kz)"><Input type="number" min={1} step={1} required value={f.amount} onChange={set('amount')} /></Field>
+          <Field label="Data"><Input type="date" required value={f.date} onChange={set('date')} /></Field>
+        </div>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!paidNow} onChange={(e) => setPaidNow(e.target.checked ? { method: 'TRANSFER' } : null)} /> Pago no acto (regista já o pagamento e a despesa)</label>
+        {paidNow ? (
+          <Field label="Método de pagamento"><Select value={paidNow.method} onChange={(e) => setPaidNow({ method: e.target.value })}>{Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></Field>
+        ) : (
+          <Field label="Vencimento"><Input type="date" value={f.dueDate} onChange={set('dueDate')} /></Field>
+        )}
+        <div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={onClose}>Cancelar</Button><Button type="submit">Registar</Button></div>
+      </form>
+    </Modal>
+  );
+}
+
+function PayableModal({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
+  const { can } = useAuth();
+  const r = useApi<PayableDetail>(`/finance/payables/${id}`);
+  const [f, setF] = useState({ amount: '', method: 'TRANSFER', paidAt: localDate(), reference: '' });
+  const [error, setError] = useState('');
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const d = r.data;
+  const pay = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await api(`/finance/payables/${id}/payments`, { method: 'POST', body: { ...f, amount: Number(f.amount || d!.balance) } });
+      setF({ ...f, amount: '', reference: '' });
+      setError('');
+      r.reload();
+      onChanged();
+    } catch (err) {
+      setError(errMsg(err));
+    }
+  };
+  return (
+    <Modal open title={d ? `${d.supplier.name} - ${d.description}` : 'Dívida'} onClose={onClose}>
+      {!d ? <div className="text-slate-500">{r.error ?? 'A carregar…'}</div> : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-3 text-sm">
+            <div><div className="text-xs text-slate-500">Valor</div>{formatKz(d.amount)}</div>
+            <div><div className="text-xs text-slate-500">Pago</div>{formatKz(d.paid)}</div>
+            <div><div className="text-xs text-slate-500">Em dívida</div><b>{formatKz(d.balance)}</b></div>
+            <div><div className="text-xs text-slate-500">Data</div>{formatDate(d.date)}</div>
+            <div><div className="text-xs text-slate-500">Vencimento</div>{d.dueDate ? formatDate(d.dueDate) : '-'}</div>
+            <div><div className="text-xs text-slate-500">Estado</div><Badge tone={tone(d.status)}>{RECEIVABLE_STATUS[d.status]}</Badge></div>
+            <div className="col-span-3"><div className="text-xs text-slate-500">Categoria{d.reference && ' · Factura'}</div>{d.category.name}{d.reference && ` · ${d.reference}`}</div>
+          </div>
+          <div>
+            <h4 className="mb-1 text-sm font-semibold">Pagamentos</h4>
+            {d.payments.length === 0 && <p className="text-sm text-slate-500">Nenhum.</p>}
+            <ul className="divide-y divide-slate-100 text-sm">
+              {d.payments.map((p) => (
+                <li key={p.id} className={`flex items-center justify-between py-1.5 ${p.cancelledAt ? 'text-slate-400 line-through' : ''}`}>
+                  <span>{formatDate(p.paidAt)} · {PAYMENT_METHODS[p.method]}{p.reference && ` · ${p.reference}`}</span>
+                  <span className="flex items-center gap-3">{formatKz(p.amount)}{!p.cancelledAt && can('finance.delete') && <button className="text-xs text-red-600 no-underline hover:underline" onClick={() => setCancelling(p.id)}>Anular</button>}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          {d.balance > 0 && can('finance.create') && (
+            <form onSubmit={pay} className="space-y-3 rounded-lg bg-slate-50 p-3">
+              <h4 className="text-sm font-semibold">Registar pagamento</h4>
+              <Alert>{error}</Alert>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Valor (Kz)"><Input type="number" min={1} max={d.balance} step={1} placeholder={String(d.balance)} value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></Field>
+                <Field label="Data"><Input type="date" required value={f.paidAt} onChange={(e) => setF({ ...f, paidAt: e.target.value })} /></Field>
+                <Field label="Método"><Select value={f.method} onChange={(e) => setF({ ...f, method: e.target.value })}>{Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></Field>
+                <Field label="Referência"><Input value={f.reference} onChange={(e) => setF({ ...f, reference: e.target.value })} /></Field>
+              </div>
+              <Button type="submit">Pagar {f.amount ? formatKz(Number(f.amount)) : `saldo (${formatKz(d.balance)})`}</Button>
+            </form>
+          )}
+          {can('finance.delete') && !d.payments.some((p) => !p.cancelledAt) && <Button variant="danger" onClick={() => setRemoving(true)}>Eliminar dívida</Button>}
+        </div>
+      )}
+      {cancelling && <ConfirmModal title="Anular pagamento" danger message="O valor volta a ficar em dívida e a despesa correspondente é removida." onClose={() => setCancelling(null)} onConfirm={async () => { await api(`/finance/supplier-payments/${cancelling}/cancel`, { method: 'POST' }); r.reload(); onChanged(); }} />}
+      {removing && <ConfirmModal title="Eliminar dívida" danger message="Registo lançado por engano? A dívida deixa de aparecer." onClose={() => setRemoving(false)} onConfirm={async () => { await api(`/finance/payables/${id}`, { method: 'DELETE' }); onChanged(); onClose(); }} />}
+    </Modal>
+  );
+}
+
+type Entry = { id: string; type: 'INCOME' | 'EXPENSE'; amount: number; date: string; description: string; paymentId: string | null; supplierPaymentId: string | null; category: { name: string }; businessLineId: string | null };
 function Entries() {
   const { can } = useAuth();
   const lines = useBusinessLines();
@@ -257,7 +482,7 @@ function Entries() {
           {list.data?.items.map((e) => (
             <tr key={e.id}>
               <Td>{formatDate(e.date)}</Td><Td>{e.type === 'INCOME' ? <Badge tone="green">Receita</Badge> : <Badge tone="red">Despesa</Badge>}</Td>
-              <Td>{e.category.name}</Td><Td>{e.description}{e.paymentId && <span className="ml-1 text-xs text-slate-400">(automático)</span>}</Td>
+              <Td>{e.category.name}</Td><Td>{e.description}{(e.paymentId || e.supplierPaymentId) && <span className="ml-1 text-xs text-slate-400">(automático)</span>}</Td>
               <Td className="text-right">{formatKz(e.amount)}</Td>
             </tr>
           ))}

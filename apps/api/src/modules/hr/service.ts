@@ -1,4 +1,5 @@
-import { businessDays, computePay, type ListQuery, type PayrollRules, attendanceSheetSchema, employeeSchema, leaveSchema } from '@ivamarg/shared';
+import { attendanceFromPunches, businessDays, computePay, DEFAULT_SCHEDULE, salaryInstalment, type salaryPaymentSchema, type ListQuery, type PayrollRules, type WorkSchedule, attendanceSheetSchema, biometricImportSchema, employeeSchema, leaveSchema } from '@ivamarg/shared';
+import { Prisma } from '@prisma/client';
 import type { z } from 'zod';
 import { audit, type Ctx } from '../../lib/audit';
 import { AppError, notFound } from '../../lib/errors';
@@ -6,6 +7,7 @@ import { pageArgs, pageResult } from '../../lib/pagination';
 import { prisma } from '../../lib/prisma';
 import { nextNumber } from '../../lib/sequence';
 import { getSetting } from '../../lib/settings';
+import { putFile, signedUrl } from '../../lib/storage';
 
 const day = (iso: string) => new Date(`${iso}T00:00:00Z`);
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -45,6 +47,12 @@ export async function getEmployee(id: string) {
   return { ...e, leaves, payslips, vacation: await vacationBalance(id, year, e.vacationDays) };
 }
 
+async function checkBiometric(biometricId: string | null | undefined, employeeId?: string) {
+  if (!biometricId) return;
+  const taken = await prisma.employee.findFirst({ where: { biometricId, ...(employeeId && { id: { not: employeeId } }) } });
+  if (taken) throw new AppError(409, 'BIOMETRIC_TAKEN', `O n.º biométrico ${biometricId} já está atribuído a ${taken.name}`);
+}
+
 async function checkOperator(operatorId: string | null, employeeId?: string) {
   if (!operatorId) return;
   const taken = await prisma.employee.findFirst({ where: { operatorId, deletedAt: null, ...(employeeId && { id: { not: employeeId } }) } });
@@ -53,6 +61,7 @@ async function checkOperator(operatorId: string | null, employeeId?: string) {
 
 export async function createEmployee(ctx: Ctx, d: EmployeeData) {
   await checkOperator(d.operatorId);
+  await checkBiometric(d.biometricId);
   return prisma.$transaction(async (tx) => {
     const e = await tx.employee.create({ data: { ...d, number: await nextNumber(tx, 'FUN'), createdById: ctx.userId } });
     await audit(ctx, { entity: 'Employee', entityId: e.id, action: 'create', after: e }, tx);
@@ -64,6 +73,7 @@ export async function updateEmployee(ctx: Ctx, id: string, d: Partial<EmployeeDa
   const before = await prisma.employee.findFirst({ where: { id, deletedAt: null } });
   if (!before) throw notFound('Trabalhador');
   if (d.operatorId !== undefined) await checkOperator(d.operatorId, id);
+  await checkBiometric(d.biometricId, id);
   const e = await prisma.employee.update({ where: { id }, data: d });
   await audit(ctx, { entity: 'Employee', entityId: id, action: 'update', before, after: e });
   return e;
@@ -73,7 +83,7 @@ export async function deleteEmployee(ctx: Ctx, id: string) {
   const before = await prisma.employee.findFirst({ where: { id, deletedAt: null } });
   if (!before) throw notFound('Trabalhador');
   // Liberta o operador para poder ser ligado a outro trabalhador; o histórico fica.
-  await prisma.employee.update({ where: { id }, data: { deletedAt: new Date(), operatorId: null, status: 'TERMINATED' } });
+  await prisma.employee.update({ where: { id }, data: { deletedAt: new Date(), operatorId: null, biometricId: null, status: 'TERMINATED' } });
   await audit(ctx, { entity: 'Employee', entityId: id, action: 'delete', before });
 }
 
@@ -101,6 +111,39 @@ export async function saveAttendance(ctx: Ctx, d: z.output<typeof attendanceShee
   );
   await audit(ctx, { entity: 'Attendance', action: 'save', after: { date: d.date, rows: d.rows.length } });
   return attendanceSheet(d.date);
+}
+
+/**
+ * Importação do relógio biométrico. Substitui no período os registos Presente/Atraso/Falta dos trabalhadores
+ * com n.º biométrico; justificações, férias, doença e feriados (manuais ou de pedidos) ficam intactos.
+ */
+export async function importBiometric(ctx: Ctx, d: z.output<typeof biometricImportSchema>) {
+  const [employees, schedule, hol] = await Promise.all([
+    prisma.employee.findMany({ where: { deletedAt: null, status: { not: 'TERMINATED' }, biometricId: { not: null } }, select: { id: true, name: true, number: true, biometricId: true, hireDate: true } }),
+    getSetting<WorkSchedule>('hr.schedule', DEFAULT_SCHEDULE),
+    holidays(),
+  ]);
+  const range = { from: d.from, to: d.to };
+  const { rows, unmatched } = attendanceFromPunches(d.punches, employees.map((e) => ({ id: e.id, biometricId: e.biometricId!, hireDate: iso(e.hireDate) })), range, schedule, hol);
+  const protectedDays = new Set(
+    (await prisma.attendance.findMany({ where: { employeeId: { in: employees.map((e) => e.id) }, date: { gte: day(d.from), lte: day(d.to) }, OR: [{ leaveId: { not: null } }, { status: { notIn: ['PRESENT', 'LATE', 'ABSENT'] } }] }, select: { employeeId: true, date: true } }))
+      .map((a) => `${a.employeeId}|${iso(a.date)}`),
+  );
+  const toSave = rows.filter((r) => !protectedDays.has(`${r.employeeId}|${r.date}`));
+  const summary = employees
+    .map((e) => {
+      const mine = toSave.filter((r) => r.employeeId === e.id);
+      return { employee: { id: e.id, number: e.number, name: e.name, biometricId: e.biometricId }, present: mine.filter((r) => r.status === 'PRESENT').length, late: mine.filter((r) => r.status === 'LATE').length, absent: mine.filter((r) => r.status === 'ABSENT').length, incomplete: mine.filter((r) => r.incomplete).length, overtimeHours: mine.reduce((s, r) => s + r.overtimeHours, 0) };
+    })
+    .sort((a, b) => a.employee.name.localeCompare(b.employee.name));
+  const result = { from: d.from, to: d.to, punches: d.punches.length, records: toSave.length, kept: rows.length - toSave.length, employees: summary, unmatched };
+  if (d.dryRun) return result;
+  await prisma.$transaction([
+    prisma.attendance.deleteMany({ where: { employeeId: { in: employees.map((e) => e.id) }, date: { gte: day(d.from), lte: day(d.to) }, leaveId: null, status: { in: ['PRESENT', 'LATE', 'ABSENT'] } } }),
+    prisma.attendance.createMany({ data: toSave.map(({ incomplete: _i, ...r }) => ({ ...r, date: day(r.date), updatedById: ctx.userId })), skipDuplicates: true }),
+  ]);
+  await audit(ctx, { entity: 'Attendance', action: 'import_biometric', after: { from: d.from, to: d.to, punches: d.punches.length, records: toSave.length, unmatched: unmatched.map((u) => u.id) } });
+  return result;
 }
 
 /** Resumo do mês por trabalhador: contagem por estado e horas extra. */
@@ -177,6 +220,23 @@ export async function decideLeave(ctx: Ctx, id: string, status: 'APPROVED' | 'RE
   });
 }
 
+/** Documento justificativo (atestado, declaração…) anexado ao pedido; um novo envio substitui o anterior. */
+export async function attachLeaveFile(ctx: Ctx, id: string, file: { buffer: Buffer; filename: string; mime: string }) {
+  const l = await prisma.leave.findUnique({ where: { id } });
+  if (!l) throw notFound('Pedido');
+  const key = await putFile(file.buffer, 'hr', file.filename);
+  const after = await prisma.leave.update({ where: { id }, data: { attachmentKey: key, attachmentName: file.filename, attachmentMime: file.mime } });
+  await audit(ctx, { entity: 'Leave', entityId: id, action: 'attach', before: { attachmentName: l.attachmentName }, after: { attachmentName: file.filename, size: file.buffer.length } });
+  return after;
+}
+
+export async function leaveFileUrl(ctx: Ctx, id: string) {
+  const l = await prisma.leave.findUnique({ where: { id } });
+  if (!l?.attachmentKey) throw notFound('Documento');
+  await audit(ctx, { entity: 'Leave', entityId: id, action: 'view_attachment' });
+  return { url: signedUrl(l.attachmentKey, 300), mime: l.attachmentMime, filename: l.attachmentName };
+}
+
 // ── Salários ──
 
 const rules = () => getSetting<PayrollRules | null>('hr.payroll', null).then((r) => {
@@ -185,20 +245,21 @@ const rules = () => getSetting<PayrollRules | null>('hr.payroll', null).then((r)
 });
 
 export const listRuns = () =>
-  prisma.payrollRun.findMany({ orderBy: { period: 'desc' }, include: { payslips: { select: { gross: true, net: true, inssEmployee: true, inssEmployer: true, irt: true } } } }).then((runs) =>
+  prisma.payrollRun.findMany({ orderBy: { period: 'desc' }, include: { payslips: { select: { gross: true, net: true, paid: true, inssEmployee: true, inssEmployer: true, irt: true } } } }).then((runs) =>
     runs.map(({ payslips, ...r }) => ({ ...r, count: payslips.length, ...sum(payslips) })),
   );
 
-const sum = (ps: { gross: number; net: number; inssEmployee: number; inssEmployer: number; irt: number }[]) => ({
+const sum = (ps: { gross: number; net: number; paid: number; inssEmployee: number; inssEmployer: number; irt: number }[]) => ({
   gross: ps.reduce((s, p) => s + p.gross, 0),
   net: ps.reduce((s, p) => s + p.net, 0),
+  paid: ps.reduce((s, p) => s + p.paid, 0),
   inss: ps.reduce((s, p) => s + p.inssEmployee + p.inssEmployer, 0),
   irt: ps.reduce((s, p) => s + p.irt, 0),
   employerCost: ps.reduce((s, p) => s + p.gross + p.inssEmployer, 0),
 });
 
 export async function getRun(id: string) {
-  const run = await prisma.payrollRun.findUnique({ where: { id }, include: { payslips: { include: { employee: { select: { id: true, number: true, name: true, position: true, department: true, nif: true, inssNumber: true, iban: true, bank: true } } }, orderBy: { employee: { name: 'asc' } } } } });
+  const run = await prisma.payrollRun.findUnique({ where: { id }, include: { payslips: { include: { employee: { select: { id: true, number: true, name: true, position: true, department: true, nif: true, inssNumber: true, iban: true, bank: true } }, payments: { orderBy: { createdAt: 'asc' } } }, orderBy: { employee: { name: 'asc' } } } } });
   if (!run) throw notFound('Folha de salários');
   return { ...run, totals: sum(run.payslips) };
 }
@@ -259,16 +320,68 @@ export async function updatePayslip(ctx: Ctx, id: string, d: { bonus?: number; o
   return after;
 }
 
-export async function setRunStatus(ctx: Ctx, id: string, status: 'APPROVED' | 'PAID' | 'DRAFT') {
+/** Aprovar (rascunho → aprovada) ou reabrir (aprovada sem pagamentos → rascunho). Pagar = paySalaries. */
+export async function setRunStatus(ctx: Ctx, id: string, status: 'APPROVED' | 'DRAFT') {
   const run = await prisma.payrollRun.findUnique({ where: { id } });
   if (!run) throw notFound('Folha de salários');
-  const from = { APPROVED: 'DRAFT', PAID: 'APPROVED', DRAFT: 'APPROVED' }[status];
+  const from = { APPROVED: 'DRAFT', DRAFT: 'APPROVED' }[status];
   if (run.status !== from) throw new AppError(409, 'INVALID_STATE', 'Transição de estado inválida');
-  const now = new Date();
   const after = await prisma.payrollRun.update({
     where: { id },
-    data: { status, ...(status === 'APPROVED' && { approvedById: ctx.userId, approvedAt: now }), ...(status === 'PAID' && { paidAt: now }), ...(status === 'DRAFT' && { approvedById: null, approvedAt: null }) },
+    data: status === 'APPROVED' ? { status, approvedById: ctx.userId, approvedAt: new Date() } : { status, approvedById: null, approvedAt: null },
   });
   await audit(ctx, { entity: 'PayrollRun', entityId: id, action: status.toLowerCase(), before: run, after });
   return after;
+}
+
+// ── Pagamento dos salários (por trabalhador / departamento, total ou parcial) ──
+
+/** Estado da folha a partir dos recibos: todos pagos → paga; algum pagamento → parcialmente paga. */
+async function syncRunStatus(tx: Prisma.TransactionClient, runId: string) {
+  const slips = await tx.payslip.findMany({ where: { runId }, select: { net: true, paid: true } });
+  const status = slips.every((s) => s.paid >= s.net) ? 'PAID' : slips.some((s) => s.paid > 0) ? 'PARTIAL' : 'APPROVED';
+  await tx.payrollRun.update({ where: { id: runId }, data: { status, paidAt: status === 'PAID' ? new Date() : null } });
+  return status;
+}
+
+/** Paga os recibos seleccionados (% do líquido ou valor fixo) e lança cada pagamento como despesa "Salários". */
+export async function paySalaries(ctx: Ctx, runId: string, d: z.output<typeof salaryPaymentSchema>) {
+  if (d.amount !== undefined && d.payslipIds.length > 1) throw new AppError(422, 'AMOUNT_SINGLE', 'Valor fixo só para um trabalhador; para vários use a percentagem');
+  return prisma.$transaction(async (tx) => {
+    const run = await tx.payrollRun.findUnique({ where: { id: runId } });
+    if (!run) throw notFound('Folha de salários');
+    if (!['APPROVED', 'PARTIAL'].includes(run.status)) throw new AppError(409, 'INVALID_STATE', 'Só folhas aprovadas podem ser pagas');
+    await tx.$queryRaw`SELECT id FROM "Payslip" WHERE id IN (${Prisma.join(d.payslipIds)}) FOR UPDATE`;
+    const slips = await tx.payslip.findMany({ where: { id: { in: d.payslipIds }, runId }, include: { employee: { select: { name: true } } } });
+    const cat = await tx.entryCategory.upsert({ where: { name_type: { name: 'Salários', type: 'EXPENSE' } }, create: { name: 'Salários', type: 'EXPENSE' }, update: {} });
+    let total = 0;
+    let count = 0;
+    for (const s of slips) {
+      const amount = salaryInstalment(s.net, s.paid, d.percent, d.amount);
+      if (!amount) continue;
+      const p = await tx.salaryPayment.create({ data: { payslipId: s.id, amount, method: d.method, paidAt: d.paidAt, reference: d.reference, userId: ctx.userId } });
+      await tx.payslip.update({ where: { id: s.id }, data: { paid: s.paid + amount } });
+      await tx.financialEntry.create({ data: { type: 'EXPENSE', categoryId: cat.id, amount, date: d.paidAt, description: `Salário ${run.period} - ${s.employee.name}`, salaryPaymentId: p.id, createdById: ctx.userId } });
+      total += amount;
+      count++;
+    }
+    if (!count) throw new AppError(422, 'NOTHING_TO_PAY', 'Os recibos seleccionados já estão pagos');
+    const status = await syncRunStatus(tx, runId);
+    await audit(ctx, { entity: 'PayrollRun', entityId: runId, action: 'pay', after: { payslips: count, total, percent: d.percent, amount: d.amount, status } }, tx);
+    return { count, total, status };
+  });
+}
+
+/** Anular um pagamento (erro de registo): repõe o valor em falta e remove a despesa. */
+export async function cancelSalaryPayment(ctx: Ctx, id: string) {
+  return prisma.$transaction(async (tx) => {
+    const p = await tx.salaryPayment.findUnique({ where: { id }, include: { payslip: true } });
+    if (!p || p.cancelledAt) throw notFound('Pagamento');
+    await tx.salaryPayment.update({ where: { id }, data: { cancelledAt: new Date() } });
+    await tx.payslip.update({ where: { id: p.payslipId }, data: { paid: { decrement: p.amount } } });
+    await tx.financialEntry.updateMany({ where: { salaryPaymentId: id }, data: { deletedAt: new Date() } });
+    await syncRunStatus(tx, p.payslip.runId);
+    await audit(ctx, { entity: 'SalaryPayment', entityId: id, action: 'cancel', before: p }, tx);
+    return { ok: true };
+  });
 }

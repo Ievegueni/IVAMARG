@@ -113,7 +113,7 @@ describe('produção ponta a ponta', () => {
     const client = (await admin.call('POST', '/clients', { name: `Escola ${run}` })).body;
     const order = await admin.call('POST', '/orders', {
       clientId: client.id,
-      lines: [{ description: 'Polo', productModelId: modelId, sizeGrid: { M: 15, XL: 4 }, unitPrice: 6000 }],
+      lines: [{ description: 'Polo', productModelId: modelId, sizeGrid: { M: 15, XL: 4 }, color: 'Azul-marinho', details: 'Bordado no peito', unitPrice: 6000 }],
     });
     orderId = order.body.id;
   });
@@ -123,6 +123,7 @@ describe('produção ponta a ponta', () => {
     expect(created.status).toBe(200);
     poId = created.body[0].id;
     const po = (await prod.call('GET', `/production/orders/${poId}`)).body;
+    expect(po.items[0].orderLine).toMatchObject({ color: 'Azul-marinho', details: 'Bordado no peito' });
     const t = po.shortages.find((s: { itemId: string }) => s.itemId === tecido.id);
     expect(t.required).toBe(15 * 1.2 + 4 * 1.5); // 24
     expect(t.shortage).toBe(0);
@@ -247,5 +248,11 @@ describe('produção ponta a ponta', () => {
     const r = await prod.call('GET', `/production/orders/${poId}/labels`);
     expect(r.raw.headers['content-type']).toBe('application/pdf');
     expect(r.raw.rawPayload.toString('latin1')).toMatch(/\/Count 1\b/);
+  });
+
+  it('OP imprimível em PDF', async () => {
+    const r = await prod.call('GET', `/production/orders/${poId}/pdf`);
+    expect(r.raw.statusCode).toBe(200);
+    expect(r.raw.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
   });
 });

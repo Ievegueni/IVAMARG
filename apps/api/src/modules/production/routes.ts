@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { audit, ctxOf } from '../../lib/audit';
 import { forbidden } from '../../lib/errors';
 import { labelsPdf } from './labels';
+import { productionOrderPdf } from './pdf';
 import * as po from './service';
 
 type Id = { Params: { id: string } };
@@ -28,6 +29,12 @@ export async function productionRoutes(app: FastifyInstance) {
     const pdf = await labelsPdf(p, p.lots.filter((l) => !only || only.includes(l.id)));
     await audit(ctxOf(req), { entity: 'ProductionOrder', entityId: p.id, action: 'labels' });
     return reply.type('application/pdf').header('Content-Disposition', `inline; filename="etiquetas-${p.number}.pdf"`).send(pdf);
+  });
+
+  app.get<Id>('/orders/:id/pdf', view, async (req, reply) => {
+    const p = await po.getPO(req.params.id);
+    await audit(ctxOf(req), { entity: 'ProductionOrder', entityId: p.id, action: 'pdf' });
+    return reply.type('application/pdf').header('Content-Disposition', `inline; filename="${p.number}.pdf"`).send(await productionOrderPdf(p));
   });
 
   // Registo de etapas pelo escritório (escolhe operador / fornecedor).

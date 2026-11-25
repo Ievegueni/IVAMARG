@@ -154,6 +154,8 @@ export const orderLineSchema = z.object({
   description: z.string().trim().min(1, 'Descrição obrigatória'),
   productModelId: z.string().optional().nullable().transform((v) => v || null),
   sizeGrid: z.record(z.string(), z.coerce.number().int().min(0)).default({}),
+  color: optText,
+  details: optText,
   quantity: z.coerce.number().int().min(0).optional(), // se a grelha estiver vazia
   unitPrice: z.coerce.number().int().min(0),
 });
@@ -277,7 +279,7 @@ export const stageFinishSchema = z.object({
 // ─── S3: documentos, tarefas, agenda, facturação ───
 export const LINKABLE_ENTITIES = {
   Client: 'Cliente', Opportunity: 'Oportunidade', Proposal: 'Proposta', Contract: 'Contrato', Order: 'Encomenda',
-  ProductionOrder: 'Ordem de produção', Project: 'Obra', Borehole: 'Furo', Supplier: 'Fornecedor', User: 'Utilizador',
+  ProductionOrder: 'Ordem de produção', Project: 'Obra', Borehole: 'Furo', Supplier: 'Fornecedor', User: 'Utilizador', Employee: 'Trabalhador',
 } as const;
 export const DOCUMENT_MIME = [
   'application/pdf', 'image/png', 'image/jpeg', 'image/webp',
@@ -378,6 +380,20 @@ export const receivableSchema = z.object({
   dueDate: optDate,
   businessLineId: z.string().optional().nullable(),
 });
+export const payableSchema = z.object({
+  supplierId: z.string().min(1, 'Fornecedor / prestador obrigatório'),
+  categoryId: z.string().min(1, 'Categoria obrigatória'),
+  description: z.string().trim().min(2, 'Descrição obrigatória'),
+  reference: optText,
+  amount: z.coerce.number().int('Kz inteiros').positive('Valor > 0'),
+  date: z.coerce.date(),
+  dueDate: optDate,
+  businessLineId: z.string().optional().nullable().transform((v) => v || null),
+  entity: z.enum(['Order', 'Project', 'Borehole', 'Contract']).optional().nullable(),
+  entityId: z.string().optional().nullable(),
+  // Compra paga no acto: regista logo o pagamento (e a despesa).
+  paidNow: z.object({ method: z.enum(keys(PAYMENT_METHODS)), reference: optText }).optional().nullable(),
+});
 export const entrySchema = z.object({
   type: z.enum(['INCOME', 'EXPENSE']),
   categoryId: z.string().min(1, 'Categoria obrigatória'),
@@ -469,6 +485,7 @@ export const employeeSchema = z.object({
   iban: optText,
   status: z.enum(keys(EMPLOYEE_STATUS)).default('ACTIVE'),
   operatorId: z.string().optional().nullable().transform((v) => v || null),
+  biometricId: optText,
   notes: optText,
 });
 const hhmm = z.string().regex(/^\d{2}:\d{2}$/, 'Hora inválida').optional().nullable().or(z.literal('')).transform((v) => v || null);
@@ -483,6 +500,13 @@ export const attendanceSheetSchema = z.object({
     notes: optText,
   })),
 });
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida');
+export const biometricImportSchema = z.object({
+  punches: z.array(z.object({ id: z.string().max(40), name: z.string().max(120), date: isoDay, time: z.string().regex(/^\d{2}:\d{2}$/) })).min(1, 'Ficheiro sem marcações').max(500_000),
+  from: isoDay,
+  to: isoDay,
+  dryRun: z.boolean().default(true),
+}).refine((d) => d.to >= d.from, { message: 'A data final é anterior à inicial', path: ['to'] });
 export const leaveSchema = z.object({
   employeeId: z.string().min(1, 'Trabalhador obrigatório'),
   type: z.enum(keys(LEAVE_TYPES)).default('VACATION'),
@@ -490,6 +514,14 @@ export const leaveSchema = z.object({
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida'),
   reason: optText,
 }).refine((d) => d.endDate >= d.startDate, { message: 'A data de fim é anterior ao início', path: ['endDate'] });
+export const salaryPaymentSchema = z.object({
+  payslipIds: z.array(z.string().min(1)).min(1, 'Seleccione pelo menos um trabalhador'),
+  percent: z.coerce.number().min(1).max(100).default(100), // % do líquido de cada recibo
+  amount: z.coerce.number().int().positive().optional().nullable().transform((v) => v ?? undefined), // valor fixo (só um recibo)
+  method: z.enum(keys(PAYMENT_METHODS)),
+  paidAt: z.coerce.date(),
+  reference: optText,
+});
 export const payslipUpdateSchema = z.object({ bonus: kzInt.optional(), otherDeductions: kzInt.optional(), notes: optText });
 const pct = z.number().min(0).max(100);
 export const payrollRulesSchema = z.object({

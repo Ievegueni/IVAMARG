@@ -12,7 +12,7 @@ import { useApi } from '../../lib/useApi';
 import { DocumentsPanel } from '../documents/DocumentsPage';
 import { IssueInvoiceButton } from '../invoices/InvoicesPage';
 
-type Line = { description: string; model: Opt | null; sizeGrid: Record<string, number>; quantity: number; unitPrice: number };
+type Line = { description: string; model: Opt | null; sizeGrid: Record<string, number>; color: string; details: string; quantity: number; unitPrice: number };
 type Order = {
   id: string;
   number: string;
@@ -25,7 +25,7 @@ type Order = {
   total: number;
   client: { id: string; name: string };
   proposal: { id: string; number: string } | null;
-  lines: { description: string; sizeGrid: Record<string, number>; quantity: number; unitPrice: number; productModel: { id: string; reference: string; name: string } | null }[];
+  lines: { description: string; sizeGrid: Record<string, number>; color: string | null; details: string | null; quantity: number; unitPrice: number; productModel: { id: string; reference: string; name: string } | null }[];
   productionOrders: { id: string; number: string; status: keyof typeof PO_STATUS }[];
 };
 type Margin = { sale: number; cost: number; value: number; pct: number; belowMin: boolean; minPct: number; pieces: number };
@@ -41,7 +41,7 @@ export function OrderDetailPage() {
   const sizes = useAppSettings().data?.orderSizes ?? [];
   const [client, setClient] = useState<{ id: string; name: string } | null>(null);
   const [f, setF] = useState({ status: 'DRAFT', priority: 'NORMAL', deadline: '', personalizationName: '', personalizationNotes: '', notes: '' });
-  const [lines, setLines] = useState<Line[]>([{ description: '', model: null, sizeGrid: {}, quantity: 0, unitPrice: 0 }]);
+  const [lines, setLines] = useState<Line[]>([{ description: '', model: null, sizeGrid: {}, color: '', details: '', quantity: 0, unitPrice: 0 }]);
   const margin = useApi<Margin>(id && can('production.view') ? `/production/order-margin/${id}` : null);
   const [msg, setMsg] = useState<{ tone: 'error' | 'success'; text: string }>();
   const o = res.data;
@@ -50,7 +50,7 @@ export function OrderDetailPage() {
     if (!o) return;
     setClient(o.client);
     setF({ status: o.status, priority: o.priority, deadline: toDateInput(o.deadline), personalizationName: o.personalizationName ?? '', personalizationNotes: o.personalizationNotes ?? '', notes: o.notes ?? '' });
-    setLines(o.lines.map((l) => ({ description: l.description, model: l.productModel ? modelOpt(l.productModel) : null, sizeGrid: l.sizeGrid, quantity: l.quantity, unitPrice: l.unitPrice })));
+    setLines(o.lines.map((l) => ({ description: l.description, model: l.productModel ? modelOpt(l.productModel) : null, sizeGrid: l.sizeGrid, color: l.color ?? '', details: l.details ?? '', quantity: l.quantity, unitPrice: l.unitPrice })));
   }, [o]);
 
   if (res.error) return <Alert>{res.error}</Alert>;
@@ -142,6 +142,10 @@ export function OrderDetailPage() {
                   <Field label="Preço unit. (Kz)"><Input type="number" min={0} step={1} disabled={linesLocked || !editable} value={l.unitPrice} onChange={(e) => setLine(i, { unitPrice: Number(e.target.value) })} /></Field>
                   {!linesLocked && editable && <Button type="button" variant="secondary" className="self-end" disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, j) => j !== i))}>Remover</Button>}
                 </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[200px_1fr]">
+                  <Field label="Cor"><Input disabled={linesLocked || !editable} value={l.color} onChange={(e) => setLine(i, { color: e.target.value })} placeholder="ex.: Azul-marinho" /></Field>
+                  <Field label="Detalhe"><Input disabled={linesLocked || !editable} value={l.details} onChange={(e) => setLine(i, { details: e.target.value })} placeholder="ex.: manga curta, bordado no peito, botões brancos" /></Field>
+                </div>
                 <div className="mt-3 flex flex-wrap items-end gap-2">
                   {sizes.map((s) => (
                     <label key={s} className="w-16 text-center text-xs text-slate-500">
@@ -165,7 +169,7 @@ export function OrderDetailPage() {
             ))}
           </div>
           <div className="mt-4 flex items-center justify-between">
-            {!linesLocked && editable ? <Button type="button" variant="secondary" onClick={() => setLines([...lines, { description: '', model: null, sizeGrid: {}, quantity: 0, unitPrice: 0 }])}>+ Linha</Button> : <span />}
+            {!linesLocked && editable ? <Button type="button" variant="secondary" onClick={() => setLines([...lines, { description: '', model: null, sizeGrid: {}, color: '', details: '', quantity: 0, unitPrice: 0 }])}>+ Linha</Button> : <span />}
             <div className="text-right"><span className="mr-3 text-sm text-slate-500">Total</span><span className="text-lg font-semibold">{formatKz(total)}</span></div>
           </div>
         </Card>

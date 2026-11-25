@@ -203,6 +203,8 @@ Configurável sem código:
 - Custo médio ponderado por artigo (todos os armazéns), `Decimal(14,4)`; valores monetários em `Int`.
 - PIN do operador guardado como HMAC (único). Token de operador (`kind: 'op'`, 12h) só acede a `/api/floor`; o ecrã termina a sessão após 3 min sem uso.
 - Fotos de modelos e logótipo guardados como data URL (≤ 500 KB) até haver Cloudinary — migrar no S3.
+- Linha de encomenda com **cor** e **detalhe** (texto livre); fecham com as restantes linhas quando há OP.
+- OP imprimível em PDF (`/production/orders/:id/pdf`, sem custos): artigos (cor/detalhe/grelha), materiais, lotes × etapas (concluídas ou em branco para registo manual) e assinaturas.
 
 **Ecrã de chão de fábrica** (mobile-first)
 - Login simplificado do operador (PIN) num dispositivo partilhado.
@@ -282,6 +284,7 @@ Repositório central de documentos da empresa e dos processos.
 - `Receivable` nasce com a factura emitida (ou manual). Estado (aberto/parcial/pago/atraso) é derivado de `paid` e `dueDate`. Cada pagamento gera receita automática (categoria "Recebimentos de clientes"); anular repõe saldo e remove a receita.
 - Comissões: comercial = responsável da proposta (ou do cliente). Regra mais específica por linha da factura: produto > comercial > linha > geral. FIXO com produto = por unidade; sem produto = por documento. Base "recebido" proporcional ao pago. Recalcular o período apaga só as `CALCULATED`.
 - Relatórios no ecrã (JSON) e exportação PDF/Excel pela fila `reports`; "os seus" (CLAUDE.md §7) aplicado no servidor.
+- **Fornecedores e prestadores** (mesma tabela `Supplier` do stock): `Payable` = compra/serviço a pagar (categoria de despesa, centro de custo, vencimento). Cada `SupplierPayment` gera despesa automática (`FinancialEntry.supplierPaymentId`); anular repõe a dívida e remove a despesa. "Pago no acto" cria a dívida já liquidada. Requer `finance.viewAll`. Compras de stock recebidas **não** criam dívida automaticamente.
 
 ### 5.13 Operações (outras linhas de negócio)
 - **Obras**: fases, orçado vs real, materiais consumidos (stock), equipa, estado, documentos.
@@ -320,6 +323,11 @@ Relatórios: vendas, clientes, produção, stock, desempenho, financeiro. Filtro
 - **Trabalhadores** (`Employee`): identificação (BI, NIF, n.º INSS), função, departamento, contrato, remuneração (base + subsídios), IBAN, dias de férias/ano, ligação opcional a um `Operator` da fábrica.
 - **Assiduidade** (`Attendance`): registo diário por trabalhador (presente, atraso, falta injustificada/justificada, férias, doença, feriado), entrada/saída, horas extra. Resumo mensal.
 - **Férias e ausências** (`Leave`): pedido → aprovação (`hr.approve`). Conta dias úteis (sem fins-de-semana nem feriados `hr.holidays`). Saldo anual; aprovar marca a assiduidade, cancelar remove.
+- **Relógio biométrico**: importação do CSV/Excel do relógio (colunas `sJobNo`, `sName`, `Date`, `Time`; sem IN/OUT). Lido no browser, calculado no servidor (`attendanceFromPunches` em `packages/shared/src/hr.ts`). Trabalhador ↔ `Employee.biometricId`. Entrada = 1.ª marcação, saída = última (marcações a < 30 min contam como uma; marcação única depois do meio do horário = saída). Atraso/horas extra (meias horas) pelo horário `hr.schedule`; fins-de-semana/feriados = tudo extra; dias úteis sem marcação = falta. Substitui no período só Presente/Atraso/Falta; justificações, férias e doença ficam. Marcações sem n.º (`'NULL`) ignoradas; n.º sem trabalhador listado na pré-visualização.
+- **Pagamento dos salários** por recibo (`SalaryPayment`): seleccionar todos / por departamento / trabalhadores; % do líquido (ex.: 50% agora) ou valor fixo (um trabalhador), nunca acima do que falta. Folha `APPROVED → PARTIAL → PAID` automático; reabrir só sem pagamentos. Cada pagamento = despesa "Salários" (`FinancialEntry.salaryPaymentId`); anular repõe. Só o líquido entra nas despesas (INSS/IRT a entregar ao Estado não são lançados).
+- **Mensagens ao trabalhador** (`modules/hr/alerts.ts`): SMS se a flag `sms` estiver activa e houver telefone, senão email. Aniversário (job 08:00, `hr.birthdayMessage`; 29/02 → 28/02) + aviso aos RH no sino. Documentos ligados ao trabalhador (`DocumentLink.entity = 'Employee'`, secção na ficha) com validade: no alerta de validade o trabalhador recebe `hr.documentMessage`. Mensagem vazia = não enviar.
+- **Alertas de atraso** (job `payments-overdue`, 07:20): recebimentos (já existia), dívidas a fornecedores (`finance.payablesAlertDays` antes, 1.º dia de atraso e semanal) e salários (`hr.payDay`: 3 dias antes, no dia e semanalmente enquanto houver valor em falta; mês corrente e 2 anteriores). Sem estado guardado: o calendário decide quando repetir.
+- **Documento justificativo** no pedido de ausência (`Leave.attachmentKey`, mesmo storage dos documentos, URL assinado).
 - **Folhas de salário** (`PayrollRun`, `Payslip`): processamento mensal = base + subsídios + horas extra + produção à peça (operador ligado) + prémios − faltas injustificadas; INSS 3%/8%; IRT por escalões. Regras em `hr.payroll` (backoffice, **a validar pelo contabilista**), guardadas na folha para reprodutibilidade. Rascunho → aprovada → paga. Recibos PDF.
 
 ---

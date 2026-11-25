@@ -104,8 +104,8 @@ export async function getPO(id: string) {
   const po = await prisma.productionOrder.findUnique({
     where: { id },
     include: {
-      order: { select: { id: true, number: true, deadline: true, priority: true, total: true, client: { select: { id: true, name: true } } } },
-      items: { include: { productModel: { select: { id: true, reference: true, name: true } }, orderLine: { select: { description: true, unitPrice: true } } } },
+      order: { select: { id: true, number: true, deadline: true, priority: true, total: true, personalizationName: true, personalizationNotes: true, notes: true, client: { select: { id: true, name: true } } } },
+      items: { include: { productModel: { select: { id: true, reference: true, name: true } }, orderLine: { select: { description: true, unitPrice: true, color: true, details: true } } } },
       requirements: { include: { item: { select: { code: true, name: true, unit: true } } } },
       lots: {
         orderBy: { number: 'asc' },

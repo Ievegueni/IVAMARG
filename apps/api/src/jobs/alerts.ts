@@ -1,4 +1,4 @@
-import { TIMEZONE } from '@ivamarg/shared';
+import { formatDate, renderTemplate, TIMEZONE } from '@ivamarg/shared';
 import type { Job } from 'bullmq';
 import { notify, usersWithPermission } from '../lib/notify';
 import { prisma } from '../lib/prisma';
@@ -14,6 +14,7 @@ export async function scheduleAlerts() {
   await q.upsertJobScheduler('documents-expiry', { pattern: '10 7 * * *', tz: TIMEZONE }, { name: 'documents-expiry' });
   await q.upsertJobScheduler('task-reminders', { pattern: '0 7,13 * * *', tz: TIMEZONE }, { name: 'task-reminders' });
   await q.upsertJobScheduler('payments-overdue', { pattern: '20 7 * * *', tz: TIMEZONE }, { name: 'payments-overdue' });
+  await q.upsertJobScheduler('birthdays', { pattern: '0 8 * * *', tz: TIMEZONE }, { name: 'birthdays' });
 }
 
 export async function minStockAlert() {
@@ -42,7 +43,8 @@ export async function documentsExpiryAlert(now = new Date()) {
   const thresholds = [...(await getSetting<number[]>('documents.alertDays', [30, 15, 7]))].sort((a, b) => b - a);
   const today = todayLuanda(now);
   const horizon = new Date(today.getTime() + (thresholds[0] ?? 0) * 86400000);
-  const docs = await prisma.document.findMany({ where: { deletedAt: null, expiresAt: { not: null, lte: horizon } }, include: { category: true } });
+  const docs = await prisma.document.findMany({ where: { deletedAt: null, expiresAt: { not: null, lte: horizon } }, include: { category: true, links: { where: { entity: 'Employee' } } } });
+  const [employeeText, company] = await Promise.all([getSetting('hr.documentMessage', ''), getSetting('company.name', 'Ivamarg')]);
   const recipients = await usersWithPermission('documents.edit');
   const users = await prisma.user.findMany({ where: { id: { in: recipients } }, include: { role: true } });
   let sent = 0;
@@ -60,6 +62,13 @@ export async function documentsExpiryAlert(now = new Date()) {
     });
     await prisma.document.update({ where: { id: d.id }, data: { lastAlertDays: level } });
     await emitAutomation('DOCUMENT_EXPIRING', { documentId: d.id });
+    // Documento do trabalhador (BI, carta, certificados…): o próprio é avisado para o actualizar.
+    if (employeeText && d.links.length) {
+      const { messageEmployee } = await import('../modules/hr/alerts');
+      const situacao = days <= 0 ? 'expirou' : `expira em ${days} dia(s)`;
+      for (const e of await prisma.employee.findMany({ where: { id: { in: d.links.map((l) => l.entityId) }, deletedAt: null } }))
+        await messageEmployee(e, renderTemplate(employeeText, { nome: e.name, primeiro_nome: e.name.split(' ')[0], documento: d.title, situacao, data: formatDate(d.expiresAt!), empresa: company }), `Documento a actualizar: ${d.title}`);
+    }
     sent++;
   }
   return { sent };
@@ -89,5 +98,10 @@ export async function processAlerts(job: Job) {
   if (job.name === 'min-stock') return minStockAlert();
   if (job.name === 'documents-expiry') return documentsExpiryAlert();
   if (job.name === 'task-reminders') return taskReminders();
-  if (job.name === 'payments-overdue') return (await import('../modules/finance/service')).overdueAlert();
+  if (job.name === 'payments-overdue') {
+    // Atrasos: recebimentos de clientes, pagamentos a fornecedores e salários.
+    const [fin, hr] = await Promise.all([import('../modules/finance/service'), import('../modules/hr/alerts')]);
+    return { receivables: await fin.overdueAlert(), payables: await fin.payablesAlert(todayLuanda()), salaries: await hr.salaryAlert(todayLuanda()) };
+  }
+  if (job.name === 'birthdays') return (await import('../modules/hr/alerts')).birthdayGreetings(todayLuanda());
 }

@@ -20,7 +20,7 @@ type Lot = { id: string; number: string; size: string | null; quantity: number; 
 type PO = {
   id: string; number: string; status: keyof typeof PO_STATUS; quantity: number; releasedAt: string | null; completedAt: string | null;
   order: { id: string; number: string; deadline: string | null; total: number; client: { id: string; name: string } };
-  items: { id: string; quantity: number; sizeGrid: Record<string, number>; productModel: { reference: string; name: string } }[];
+  items: { id: string; quantity: number; sizeGrid: Record<string, number>; productModel: { reference: string; name: string }; orderLine: { color: string | null; details: string | null } }[];
   stages: StageInfo[];
   lots: Lot[];
   shortages: { itemId: string; code: string; name: string; unit: string; required: number; available: number; shortage: number }[];
@@ -65,6 +65,7 @@ export function ProductionOrderPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             {po.status === 'DRAFT' && editable && <Button onClick={() => act('release', {}, 'OP libertada: material reservado e lotes criados.')}>Libertar para produção</Button>}
+            <Button variant="secondary" onClick={() => openFile(`/production/orders/${id}/pdf`).catch((e) => setMsg({ tone: 'error', text: errMsg(e) }))}>Imprimir OP (PDF)</Button>
             {po.lots.length > 0 && <Button variant="secondary" onClick={() => openFile(`/production/orders/${id}/labels`).catch((e) => setMsg({ tone: 'error', text: errMsg(e) }))}>Etiquetas QR</Button>}
             {po.status === 'RELEASED' && can('stock.edit') && <Button variant="secondary" onClick={() => setModal('issue')}>Saída de material</Button>}
             {po.status === 'RELEASED' && editable && <Button variant="secondary" onClick={() => setModal('complete')}>Concluir OP</Button>}
@@ -82,7 +83,8 @@ export function ProductionOrderPage() {
         <div><div className="text-xs text-slate-500">Peças</div>{po.quantity}{po.lots.length > 0 && ` · ${po.lots.length} lotes`}</div>
         {po.items.map((i) => (
           <div key={i.id} className="sm:col-span-2 lg:col-span-5 text-slate-600">
-            <b>{i.productModel.reference}</b> {i.productModel.name}: {Object.entries(i.sizeGrid).map(([s, q]) => `${s}×${q}`).join(', ')}
+            <b>{i.productModel.reference}</b> {i.productModel.name}{i.orderLine.color && ` · ${i.orderLine.color}`}: {Object.entries(i.sizeGrid).map(([s, q]) => `${s}×${q}`).join(', ')}
+            {i.orderLine.details && <div className="text-xs text-slate-500">{i.orderLine.details}</div>}
           </div>
         ))}
       </Card>

@@ -456,6 +456,8 @@ model OrderLine {
   productModelId String?
   productModel   ProductModel?         @relation(fields: [productModelId], references: [id])
   sizeGrid       Json                  @default("{}") // { "S": 10, "M": 25 }
+  color          String?
+  details        String?
   quantity       Int
   unitPrice      Int
   total          Int
@@ -679,6 +681,7 @@ model Supplier {
   notes       String?
   purchases   Purchase[]
   stageLogs   StageLog[]
+  payables    Payable[]
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   createdById String?
@@ -1247,33 +1250,36 @@ model Payment {
 }
 
 model EntryCategory {
-  id      String           @id @default(cuid())
-  name    String
-  type    String // INCOME | EXPENSE
-  active  Boolean          @default(true)
-  entries FinancialEntry[]
+  id       String           @id @default(cuid())
+  name     String
+  type     String // INCOME | EXPENSE
+  active   Boolean          @default(true)
+  entries  FinancialEntry[]
+  payables Payable[]
 
   @@unique([name, type])
 }
 
 /// Receitas e despesas. Recebimentos de clientes geram receitas automaticamente.
 model FinancialEntry {
-  id             String        @id @default(cuid())
-  type           String // INCOME | EXPENSE
-  categoryId     String
-  category       EntryCategory @relation(fields: [categoryId], references: [id])
-  amount         Int
-  date           DateTime      @db.Date
-  description    String
-  businessLineId String?
-  entity         String? // centro de custo: Order, Project, Borehole, Contract
-  entityId       String?
-  supplierId     String?
-  paymentId      String?       @unique
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  createdById    String?
-  deletedAt      DateTime?
+  id                String        @id @default(cuid())
+  type              String // INCOME | EXPENSE
+  categoryId        String
+  category          EntryCategory @relation(fields: [categoryId], references: [id])
+  amount            Int
+  date              DateTime      @db.Date
+  description       String
+  businessLineId    String?
+  entity            String? // centro de custo: Order, Project, Borehole, Contract
+  entityId          String?
+  supplierId        String?
+  paymentId         String?       @unique
+  supplierPaymentId String?       @unique // pagamento a fornecedor/prestador (automático)
+  salaryPaymentId   String?       @unique // pagamento de salário (automático)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  createdById       String?
+  deletedAt         DateTime?
 
   @@index([type, date])
   @@index([entity, entityId])
@@ -1418,6 +1424,7 @@ model Employee {
   iban               String?
   status             String       @default("ACTIVE")
   operatorId         String?      @unique // ligação ao operador da fábrica (produção à peça)
+  biometricId        String?      @unique // n.º do trabalhador no relógio biométrico (sJobNo)
   operator           Operator?    @relation(fields: [operatorId], references: [id])
   notes              String?
   attendance         Attendance[]
@@ -1449,21 +1456,24 @@ model Attendance {
 }
 
 model Leave {
-  id          String    @id @default(cuid())
-  employeeId  String
-  employee    Employee  @relation(fields: [employeeId], references: [id])
-  type        String    @default("VACATION")
-  startDate   DateTime  @db.Date
-  endDate     DateTime  @db.Date
-  days        Int // dias úteis
-  status      String    @default("PENDING")
-  reason      String?
-  decidedById String?
-  decidedAt   DateTime?
-  comment     String?
-  createdById String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  employeeId     String
+  employee       Employee  @relation(fields: [employeeId], references: [id])
+  type           String    @default("VACATION")
+  startDate      DateTime  @db.Date
+  endDate        DateTime  @db.Date
+  days           Int // dias úteis
+  status         String    @default("PENDING")
+  reason         String?
+  attachmentKey  String? // documento justificativo (storage)
+  attachmentName String?
+  attachmentMime String?
+  decidedById    String?
+  decidedAt      DateTime?
+  comment        String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([employeeId, startDate])
 }
@@ -1483,30 +1493,89 @@ model PayrollRun {
 }
 
 model Payslip {
-  id                 String     @id @default(cuid())
+  id                 String          @id @default(cuid())
   runId              String
-  run                PayrollRun @relation(fields: [runId], references: [id])
+  run                PayrollRun      @relation(fields: [runId], references: [id])
   employeeId         String
-  employee           Employee   @relation(fields: [employeeId], references: [id])
+  employee           Employee        @relation(fields: [employeeId], references: [id])
   baseSalary         Int
   mealAllowance      Int
   transportAllowance Int
   otherAllowances    Int
-  overtimeHours      Float      @default(0)
-  overtimePay        Int        @default(0)
-  absences           Int        @default(0)
-  absenceDeduction   Int        @default(0)
-  piecePay           Int        @default(0)
-  bonus              Int        @default(0)
-  otherDeductions    Int        @default(0)
+  overtimeHours      Float           @default(0)
+  overtimePay        Int             @default(0)
+  absences           Int             @default(0)
+  absenceDeduction   Int             @default(0)
+  piecePay           Int             @default(0)
+  bonus              Int             @default(0)
+  otherDeductions    Int             @default(0)
   gross              Int
   inssEmployee       Int
   inssEmployer       Int
   irt                Int
   net                Int
+  paid               Int             @default(0) // pago ao trabalhador (pagamentos parcelados)
+  payments           SalaryPayment[]
   notes              String?
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
 
   @@unique([runId, employeeId])
+}
+
+// Dívidas a fornecedores / prestadores de serviço (compras e serviços a pagar).
+model Payable {
+  id             String            @id @default(cuid())
+  supplierId     String
+  supplier       Supplier          @relation(fields: [supplierId], references: [id])
+  categoryId     String
+  category       EntryCategory     @relation(fields: [categoryId], references: [id])
+  description    String
+  reference      String? // n.º da factura do fornecedor
+  amount         Int
+  paid           Int               @default(0)
+  date           DateTime          @db.Date
+  dueDate        DateTime?         @db.Date
+  businessLineId String?
+  entity         String? // centro de custo, como em FinancialEntry
+  entityId       String?
+  payments       SupplierPayment[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  createdById    String?
+  deletedAt      DateTime?
+
+  @@index([supplierId])
+  @@index([dueDate])
+}
+
+model SupplierPayment {
+  id          String    @id @default(cuid())
+  payableId   String
+  payable     Payable   @relation(fields: [payableId], references: [id])
+  amount      Int
+  method      String
+  paidAt      DateTime  @db.Date
+  reference   String?
+  notes       String?
+  userId      String?
+  createdAt   DateTime  @default(now())
+  cancelledAt DateTime?
+
+  @@index([paidAt])
+}
+
+model SalaryPayment {
+  id          String    @id @default(cuid())
+  payslipId   String
+  payslip     Payslip   @relation(fields: [payslipId], references: [id])
+  amount      Int
+  method      String
+  paidAt      DateTime  @db.Date
+  reference   String?
+  userId      String?
+  createdAt   DateTime  @default(now())
+  cancelledAt DateTime?
+
+  @@index([payslipId])
 }
