@@ -10,6 +10,14 @@ import { adjust, D, stockIn, stockOut, transfer } from './core';
 
 // ─── Artigos e saldos ───
 
+/** Próximo código numérico de artigo: maior código só com dígitos + 1, com zeros à esquerda (mín. 3 dígitos). Conta também os apagados (o código é único). */
+export async function nextItemCode() {
+  const rows = await prisma.$queryRaw<{ max: bigint | null; len: number | null }[]>`
+    SELECT MAX(code::bigint) AS max, MAX(LENGTH(code)) AS len FROM "StockItem" WHERE code ~ '^[0-9]{1,18}$'`;
+  const next = Number(rows[0]?.max ?? 0) + 1;
+  return String(next).padStart(Math.max(3, rows[0]?.len ?? 3), '0');
+}
+
 export async function listItems(q: ListQuery & { category?: string; belowMin?: boolean; warehouseId?: string }) {
   const where: Prisma.StockItemWhereInput = {
     deletedAt: null,

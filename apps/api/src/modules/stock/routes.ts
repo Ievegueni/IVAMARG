@@ -23,8 +23,20 @@ export async function stockRoutes(app: FastifyInstance) {
     if (!item) throw notFound('Artigo');
     return item;
   });
+  app.get('/items/next-code', create, async () => ({ code: await stock.nextItemCode() }));
   app.post('/items', create, async (req) => {
-    const item = await prisma.stockItem.create({ data: { ...stockItemSchema.parse(req.body), createdById: req.currentUser!.id } });
+    const body = stockItemSchema.extend({ code: z.string().trim().toUpperCase().optional() }).parse(req.body);
+    let item;
+    // Sem código → gera o próximo; se outro utilizador o apanhar ao mesmo tempo, tenta de novo.
+    for (let attempt = 0; ; attempt++) {
+      const code = body.code || (await stock.nextItemCode());
+      try {
+        item = await prisma.stockItem.create({ data: { ...body, code, createdById: req.currentUser!.id } });
+        break;
+      } catch (e) {
+        if (body.code || attempt >= 4 || (e as { code?: string }).code !== 'P2002') throw e;
+      }
+    }
     await audit(ctxOf(req), { entity: 'StockItem', entityId: item.id, action: 'create', after: item });
     return item;
   });

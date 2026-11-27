@@ -1,5 +1,5 @@
 import { formatKz, STOCK_CATEGORY } from '@ivamarg/shared';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../app/auth';
 import { Alert, Badge, Button, Card, Field, Input, Modal, PageHeader, Pagination, Select, Table, Td } from '../../components/ui';
@@ -88,6 +88,11 @@ export function StockPage() {
 function ItemForm({ item, onClose, onSaved }: { item: Item | null; onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState({ code: item?.code ?? '', name: item?.name ?? '', category: item?.category ?? 'RAW_MATERIAL', unit: item?.unit ?? 'm', minStock: Number(item?.minStock ?? 0), active: item?.active ?? true });
   const [error, setError] = useState('');
+  // Artigo novo: propõe já o próximo código (pode ser alterado; vazio = gerado ao guardar).
+  useEffect(() => {
+    if (item) return;
+    api<{ code: string }>('/stock/items/next-code').then((r) => setF((cur) => (cur.code ? cur : { ...cur, code: r.code }))).catch(() => {});
+  }, [item]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
@@ -102,7 +107,7 @@ function ItemForm({ item, onClose, onSaved }: { item: Item | null; onClose: () =
       <form onSubmit={submit} className="space-y-4">
         <Alert>{error}</Alert>
         <div className="grid gap-4 sm:grid-cols-[140px_1fr]">
-          <Field label="Código"><Input required value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} /></Field>
+          <Field label="Código"><Input required={!!item} placeholder="automático" value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} /></Field>
           <Field label="Nome"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
