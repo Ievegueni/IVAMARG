@@ -50,8 +50,7 @@ const settings = [
     value: {
       workingDays: 22, hoursPerDay: 8, overtimeRate: 50, inssEmployee: 3, inssEmployer: 8, allowanceExempt: 30000,
       irt: [
-        { upTo: 100000, fixed: 0, rate: 0, over: 0 },
-        { upTo: 150000, fixed: 0, rate: 13, over: 100000 },
+        { upTo: 150000, fixed: 0, rate: 0, over: 0 },
         { upTo: 200000, fixed: 12500, rate: 16, over: 150000 },
         { upTo: 300000, fixed: 31250, rate: 18, over: 200000 },
         { upTo: 500000, fixed: 49250, rate: 19, over: 300000 },
@@ -65,7 +64,7 @@ const settings = [
       ],
     },
     label: 'RH: regras de salário (INSS / IRT)',
-    description: 'A VALIDAR PELO CONTABILISTA. Tabela do IRT (Grupo A, Lei 28/20 com isenção até 100.000 Kz): parcela fixa + taxa % sobre o excesso. INSS 3% trabalhador / 8% empresa. Subsídios de alimentação e transporte isentos até "allowanceExempt" cada.',
+    description: 'A VALIDAR PELO CONTABILISTA. Tabela do IRT (Grupo A, isento até 150.000 Kz): parcela fixa + taxa % sobre o excesso. INSS 3% trabalhador / 8% empresa. Subsídios de alimentação e transporte isentos até "allowanceExempt" cada.',
   },
   { key: 'hr.holidays', value: ['2026-01-01', '2026-02-04', '2026-02-17', '2026-03-08', '2026-03-23', '2026-04-03', '2026-04-04', '2026-05-01', '2026-09-17', '2026-11-02', '2026-11-11', '2026-12-25'], label: 'RH: feriados', description: 'Datas AAAA-MM-DD separadas por vírgula. Não contam como dias de férias.' },
   { key: 'hr.schedule', value: { start: '08:00', end: '17:00', toleranceMinutes: 15, minOvertimeMinutes: 30 }, label: 'RH: horário (relógio biométrico)', description: 'Entrada/saída (HH:MM), tolerância de atraso e mínimo de minutos para contar horas extra (contadas em meias horas). Usado na importação do biométrico.' },

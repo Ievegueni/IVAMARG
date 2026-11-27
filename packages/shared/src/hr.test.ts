@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { attendanceFromPunches, businessDays, computePay, DEFAULT_SCHEDULE, irtOf, parseBiometric, salaryInstalment, type IrtBracket, type PayrollRules } from './hr';
 
-// Escalões de exemplo (forma da tabela do IRT; valores reais configuráveis no backoffice).
+// Tabela do IRT da AGT (Grupo A) — igual ao default do seed (`hr.payroll`).
 const IRT: IrtBracket[] = [
-  { upTo: 100_000, fixed: 0, rate: 0, over: 0 },
-  { upTo: 150_000, fixed: 0, rate: 13, over: 100_000 },
+  { upTo: 150_000, fixed: 0, rate: 0, over: 0 },
   { upTo: 200_000, fixed: 12_500, rate: 16, over: 150_000 },
-  { upTo: null, fixed: 31_250, rate: 18, over: 200_000 },
+  { upTo: 300_000, fixed: 31_250, rate: 18, over: 200_000 },
+  { upTo: 500_000, fixed: 49_250, rate: 19, over: 300_000 },
+  { upTo: 1_000_000, fixed: 87_250, rate: 20, over: 500_000 },
+  { upTo: 1_500_000, fixed: 187_250, rate: 21, over: 1_000_000 },
+  { upTo: 2_000_000, fixed: 292_250, rate: 22, over: 1_500_000 },
+  { upTo: 2_500_000, fixed: 402_250, rate: 23, over: 2_000_000 },
+  { upTo: 5_000_000, fixed: 517_250, rate: 24, over: 2_500_000 },
+  { upTo: 10_000_000, fixed: 1_117_250, rate: 24.5, over: 5_000_000 },
+  { upTo: null, fixed: 2_342_250, rate: 25, over: 10_000_000 },
 ];
 const R: PayrollRules = { workingDays: 22, hoursPerDay: 8, overtimeRate: 50, inssEmployee: 3, inssEmployer: 8, allowanceExempt: 30_000, irt: IRT };
 const base = { mealAllowance: 0, transportAllowance: 0, otherAllowances: 0, overtimeHours: 0, unjustifiedAbsences: 0, piecePay: 0, bonus: 0, otherDeductions: 0 };
@@ -20,9 +27,11 @@ describe('dias úteis', () => {
 
 describe('IRT', () => {
   it('isento até ao 1.º escalão; parcela fixa + taxa sobre o excesso', () => {
-    expect(irtOf(100_000, IRT)).toBe(0);
-    expect(irtOf(120_000, IRT)).toBe(2600); // 13% de 20.000
+    expect(irtOf(150_000, IRT)).toBe(0);
+    expect(irtOf(160_000, IRT)).toBe(12_500 + 1600); // + 16% de 10.000
     expect(irtOf(250_000, IRT)).toBe(31_250 + 9000); // + 18% de 50.000
+    expect(irtOf(1_600_000, IRT)).toBe(292_250 + 22_000);
+    expect(irtOf(12_000_000, IRT)).toBe(2_342_250 + 500_000);
     expect(irtOf(-5, IRT)).toBe(0);
   });
 });
@@ -45,7 +54,7 @@ describe('recibo de vencimento', () => {
     expect(p.absenceDeduction).toBe(8000);
     expect(p.gross).toBe(88_000 + 3000 + 15_000 - 8000);
     expect(p.irt).toBe(0); // abaixo do limite isento
-    expect(p.net).toBe(p.gross - p.inssEmployee - 1000);
+    expect(p.net).toBe(p.gross - p.inssEmployee - p.irt - 1000);
   });
 });
 
